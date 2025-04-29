@@ -7,13 +7,14 @@ async fn main() -> Result<(), enody::Error> {
     log::info!("enody rust example application");
 
     let mut usb_monitor = enody::remote::USBDeviceMonitor::new();
-    usb_monitor.listen()?;
+    usb_monitor.start()?;
 
-    // Wait forever by creating a future that never completes
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    for _ in 0..10 {
+        log::info!("connected devices: {:?}", usb_monitor.connected_devices());
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
 
-    usb_monitor.close().await;
-    
+    usb_monitor.stop().await;
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     Ok(())
