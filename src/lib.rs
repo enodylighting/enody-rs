@@ -11,5 +11,7 @@ pub enum Error {
     Debug(&'static str),
     Unsupported,
     USB(rusb::Error),
-    Busy
+    Serialization,
+    Busy,
+    InsufficientData
 }   

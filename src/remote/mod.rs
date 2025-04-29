@@ -15,6 +15,8 @@ use tokio::{
     task::JoinHandle
 };
 
+mod serialization;
+
 pub const INFO_CAPACITY: usize = 128;
 pub const CACHE_SIZE: usize = 3;
 pub const CLIENT_QUEUE_SIZE: usize = 3;
@@ -55,11 +57,79 @@ pub struct USBDevice {
 }
 
 impl USBDevice {
+    const USB_INTERFACE: u8 = 1;
+    const WRITE_ENDPOINT: u8 = 0x01;
+    const READ_ENDPOINT: u8 = 0x81;
+
     fn new(identifier: USBIdentifier, device: rusb::Device<rusb::Context>) -> Self {
         Self {
             identifier,
             device
         }
+    }
+
+    pub fn initialize_device(&mut self) -> Result<rusb::DeviceHandle<rusb::Context>, crate::Error> {
+        let device_handle = self.device.open()
+            .map_err(|_| crate::Error::Debug("failed to open device handle"))?;
+    
+        // Reset the device to a clean state
+        device_handle.reset()
+            .map_err(|_| crate::Error::Debug("failed to reset device handle"))?;
+    
+        // Detach kernel driver on Linux
+        #[cfg(target_os = "linux")]
+        if let Ok(active) = device_handle.kernel_driver_active(Self::USB_INTERFACE) {
+            if active {
+                match device_handle.detach_kernel_driver(Self::USB_INTERFACE) {
+                    Ok(_) => log::info!("Detached kernel driver from interface {}", Self::USB_INTERFACE),
+                    Err(e) => log::warn!("Could not detach kernel driver: {:?}", e),
+                }
+            }
+        }
+    
+        // Claim interface for communication
+        device_handle.claim_interface(Self::USB_INTERFACE)
+            .map_err(|_| crate::Error::Debug("failed to claim USB interface"))?;
+    
+        // === Optional but recommended: Perform a boot reset pulse ===
+        // First pulse RTS (0x02) high with DTR (0x01) low
+        // let _ = device_handle.write_control(
+        //     0x21, // Request type: class | interface | host-to-device
+        //     0x22, // SET_CONTROL_LINE_STATE
+        //     0x02, // RTS=1, DTR=0
+        //     Self::USB_INTERFACE as u16,
+        //     &[],
+        //     Duration::from_millis(100),
+        // );
+        // std::thread::sleep(Duration::from_millis(100));
+
+        // Clear both RTS and DTR
+        let _ = device_handle.write_control(
+            0x21,
+            0x22,
+            0x00,
+            Self::USB_INTERFACE as u16,
+            &[],
+            Duration::from_millis(100),
+        );
+    
+        // === Activate control signals ===
+        // DTR (0x01) | RTS (0x02) => 0x03
+        device_handle.write_control(
+            0x21,
+            0x22,
+            0x03,
+            Self::USB_INTERFACE as u16,
+            &[],
+            Duration::from_millis(100),
+        ).map_err(|_| crate::Error::Debug("failed to send SET_CONTROL_LINE_STATE"))?;
+    
+        // === Configure line coding (baud rate etc) ===
+        // let line_coding = LineCoding::new(115200); // 115200 baud, 8 data bits, no parity, 1 stop bit
+        // set_line_coding(&device_handle, Self::USB_INTERFACE, &line_coding)
+        //     .map_err(|_| crate::Error::Debug("failed to set line coding"))?;
+
+        Ok(device_handle)
     }
 }
 
