@@ -1,6 +1,6 @@
-const CONTROL_CHAR_STX: u8 = 0x02;
-const CONTROL_CHAR_ETX: u8 = 0x03;
-const CONTROL_CHAR_DLE: u8 = 0x10;
+pub const CONTROL_CHAR_STX: u8 = 0x02;
+pub const CONTROL_CHAR_ETX: u8 = 0x03;
+pub const CONTROL_CHAR_DLE: u8 = 0x10;
 
 fn escaped_bytes(payload: &[u8]) -> Vec<u8> {
     let mut escaped_bytes = Vec::with_capacity(payload.len() * 2);
@@ -69,7 +69,6 @@ impl TryFrom<crate::message::Message> for Vec<u8> {
         let message_bytes = postcard::to_allocvec(&message)
             .map_err(|_| crate::Error::Serialization)?;
         let framed_bytes = frame_bytes(&message_bytes);
-        log::trace!("{:?}", framed_bytes);
         Ok(framed_bytes)
     }
 }

@@ -7,20 +7,18 @@ use std::{
 };
 
 use rusb::UsbContext;
+use serde::ser;
 use tokio::{
     sync::{
         broadcast,
         mpsc
-    },
-    task::JoinHandle
+    }, task::JoinHandle
 };
 
 mod serialization;
 
-pub const INFO_CAPACITY: usize = 128;
-pub const CACHE_SIZE: usize = 3;
-pub const CLIENT_QUEUE_SIZE: usize = 3;
-pub const USB_BUFFER_SIZE: usize = 128;
+const USB_BUFFER_SIZE: usize = 128;
+const MESSAGE_CHANNEL_SIZE: usize = 8;
 const RUSB_LOG_LEVEL: rusb::LogLevel = rusb::LogLevel::None;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,26 +48,21 @@ fn rusb_log_shim(level: rusb::LogLevel, message: String) {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct USBDevice {
-    identifier: USBIdentifier,
-    device: rusb::Device<rusb::Context>
+#[derive(Debug)]
+pub struct USBRemoteRuntime {
+    device: USBDevice,
+    handle: Arc<rusb::DeviceHandle<rusb::Context>>,
+    bulk_read_task: JoinHandle<Result<(), crate::Error>>,
+    message_rx: mpsc::Receiver<crate::message::Message>
 }
 
-impl USBDevice {
+impl USBRemoteRuntime {
     const USB_INTERFACE: u8 = 1;
     const WRITE_ENDPOINT: u8 = 0x01;
     const READ_ENDPOINT: u8 = 0x81;
 
-    fn new(identifier: USBIdentifier, device: rusb::Device<rusb::Context>) -> Self {
-        Self {
-            identifier,
-            device
-        }
-    }
-
-    pub fn initialize_device(&mut self) -> Result<rusb::DeviceHandle<rusb::Context>, crate::Error> {
-        let device_handle = self.device.open()
+    fn initialize_device(device: USBDevice) -> Result<rusb::DeviceHandle<rusb::Context>, crate::Error> {
+        let device_handle = device.device.open()
             .map_err(|_| crate::Error::Debug("failed to open device handle"))?;
     
         // Reset the device to a clean state
@@ -90,18 +83,6 @@ impl USBDevice {
         // Claim interface for communication
         device_handle.claim_interface(Self::USB_INTERFACE)
             .map_err(|_| crate::Error::Debug("failed to claim USB interface"))?;
-    
-        // === Optional but recommended: Perform a boot reset pulse ===
-        // First pulse RTS (0x02) high with DTR (0x01) low
-        // let _ = device_handle.write_control(
-        //     0x21, // Request type: class | interface | host-to-device
-        //     0x22, // SET_CONTROL_LINE_STATE
-        //     0x02, // RTS=1, DTR=0
-        //     Self::USB_INTERFACE as u16,
-        //     &[],
-        //     Duration::from_millis(100),
-        // );
-        // std::thread::sleep(Duration::from_millis(100));
 
         // Clear both RTS and DTR
         let _ = device_handle.write_control(
@@ -123,13 +104,103 @@ impl USBDevice {
             &[],
             Duration::from_millis(100),
         ).map_err(|_| crate::Error::Debug("failed to send SET_CONTROL_LINE_STATE"))?;
-    
-        // === Configure line coding (baud rate etc) ===
-        // let line_coding = LineCoding::new(115200); // 115200 baud, 8 data bits, no parity, 1 stop bit
-        // set_line_coding(&device_handle, Self::USB_INTERFACE, &line_coding)
-        //     .map_err(|_| crate::Error::Debug("failed to set line coding"))?;
 
         Ok(device_handle)
+    }
+
+    pub fn open(device: USBDevice, mut task_shutdown: broadcast::Receiver<()>) -> Result<Self, crate::Error> {
+        let handle = Arc::new(Self::initialize_device(device.clone())?);
+        let task_handle = handle.clone();
+        let (message_tx, message_rx) = mpsc::channel(64);
+        let bulk_read_task = tokio::task::spawn_blocking(move || {
+            let mut message_buffer = Vec::<u8>::new();
+            let mut escaped = false;
+            let timeout = Duration::from_millis(1);
+            loop {
+                // read the next chunk of incoming data
+                let mut read_buffer = [u8::default(); USB_BUFFER_SIZE];
+                let read_result = task_handle.read_bulk(Self::READ_ENDPOINT, &mut read_buffer, timeout)
+                        .map_err(|e| crate::Error::USB(e));
+
+                // if the read is succesful, append to the message_buffer
+                if let Ok(bytes_read) = read_result {
+                    for i in 0..bytes_read {
+                        let byte = read_buffer[i];
+
+                        // check if rx started in the middle of a frame
+                        if message_buffer.is_empty() && byte != serialization::CONTROL_CHAR_STX {
+                            continue;
+                        }
+
+                        message_buffer.push(byte);
+
+                        // deserialize if at end of frame
+                        if byte == serialization::CONTROL_CHAR_ETX && !escaped {
+                            match crate::message::Message::try_from(message_buffer.clone()).map_err(|_| crate::Error::Serialization) {
+                                Ok(message) => {
+                                    if let Err(_e) = message_tx.try_send(message) {
+                                        // message failed to send, presumable client is not ingesting
+                                    }
+                                },
+                                Err(_e) => {
+                                    // failed to deserialize message
+                                }
+                            }
+                        }
+
+                        // check for escaped
+                        escaped = byte == serialization::CONTROL_CHAR_DLE && !escaped;
+                    }
+                }
+
+                if let Ok(_reason) = task_shutdown.try_recv() {
+                    log::trace!("remote runtime task shutdown");
+                    return Ok(());
+                }
+            }
+        });
+        let instance = Self {
+            device,
+            handle,
+            bulk_read_task,
+            message_rx
+        };
+
+        Ok(instance)
+    }
+    
+    pub async fn next_message(&mut self) -> Result<crate::message::Message, crate::Error> {
+        match self.message_rx.recv().await {
+            Some(message) => Ok(message),
+            None => Err(crate::Error::Busy)
+        }
+    }
+}
+
+impl crate::message::Responder for USBRemoteRuntime {
+    fn handle_command(&mut self, command: crate::message::CommandMessage) {
+        let message = crate::message::Message::Command(command);
+        let payload: Vec<u8> = Vec::<u8>::try_from(message).unwrap();
+        self.handle.write_bulk(Self::WRITE_ENDPOINT, &payload, Duration::ZERO).unwrap();
+    }
+
+    fn handle_event(&mut self, event: crate::message::EventMessage) {
+        
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct USBDevice {
+    identifier: USBIdentifier,
+    device: rusb::Device<rusb::Context>
+}
+
+impl USBDevice {
+    fn new(identifier: USBIdentifier, device: rusb::Device<rusb::Context>) -> Self {
+        Self {
+            identifier,
+            device
+        }
     }
 }
 
@@ -303,5 +374,9 @@ impl USBDeviceMonitor {
 
     pub fn connected_devices(&mut self) -> Vec<USBDevice> {
         self.connected_devices.lock().unwrap().clone()
+    }
+
+    pub fn shutdown_rx(&mut self) -> broadcast::Receiver<()> {
+        self.task_shutdown.subscribe()
     }
 }

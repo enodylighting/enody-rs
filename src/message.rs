@@ -2,6 +2,7 @@ use serde::{
 	Deserialize,
 	Serialize
 };
+use tokio::task::Id;
 
 use super::{
     Configuration,
@@ -87,7 +88,7 @@ pub enum HostEvent {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HostInfo {
-
+	pub identifier: Identifier
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -192,11 +193,12 @@ pub enum EmitterEvent {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EmitterInfo {
 	
-
 }
 
+pub trait Responder {
+	fn handle_command(&mut self, command: CommandMessage);
+	fn handle_event(&mut self, event: EventMessage);
+}
 
-pub trait Runtime {
-	fn handle_command();
-	fn handle_event();
+pub trait Runtime: Responder {
 }

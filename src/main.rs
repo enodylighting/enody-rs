@@ -1,5 +1,4 @@
-use std::time::Duration;
-
+use enody::message::Responder;
 use log;
 use tokio;
 
@@ -15,22 +14,33 @@ async fn main() -> Result<(), enody::Error> {
 
     let devices = usb_monitor.connected_devices();
     if devices.len() > 0 {
-        let mut device = devices[0].clone();
-        let handle = device.initialize_device().unwrap();
+        let device = devices[0].clone();
+        let mut runtime = enody::remote::USBRemoteRuntime::open(device, usb_monitor.shutdown_rx()).unwrap();
+        let command = enody::message::CommandMessage {
+            identifier: uuid::Uuid::new_v4(),
+            context: None,
+            resource: None,
+            command: enody::message::Command::Host(
+                enody::message::HostCommand::Info
+            )
+        };
 
-        let message = enody::message::Message::Command(
-            enody::message::CommandMessage {
-                identifier: uuid::Uuid::new_v4(),
-                context: None,
-                resource: None,
-                command: enody::message::Command::Host(
-                    enody::message::HostCommand::Info
-                )
+        let mut benchmark = async |count: u32| {
+            let start = std::time::Instant::now();
+            for i in 0..count {
+                runtime.handle_command(command.clone());
+    
+                let response = runtime.next_message().await.unwrap();
+                // log::info!("{:?}", response);
             }
-        );
+            let duration = start.elapsed();
+            log::info!("Sent {} commands in {:?} ({:?} per command)", count, duration, duration / count);
+        };
 
-        let payload: Vec<u8> = Vec::<u8>::try_from(message).unwrap();
-        handle.write_bulk(0x01, &payload, Duration::ZERO).unwrap();
+        benchmark(1).await;
+        benchmark(10).await;
+        benchmark(100).await;
+        benchmark(1_000).await;
     }
 
     usb_monitor.stop().await.expect("failed to stop usb monitor");
