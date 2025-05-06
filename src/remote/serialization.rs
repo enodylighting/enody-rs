@@ -54,20 +54,28 @@ fn unframe_bytes(frame: &[u8]) -> Result<Vec<u8>, crate::Error> {
     Ok(unescape_bytes(payload))
 }
 
-impl TryFrom<Vec<u8>> for crate::message::Message {
+impl<InternalCommand, InternalEvent> TryFrom<Vec<u8>> for crate::message::Message<InternalCommand, InternalEvent>
+where
+    InternalCommand: serde::de::DeserializeOwned + serde::Serialize,
+    InternalEvent: serde::de::DeserializeOwned + serde::Serialize
+{
     type Error = crate::Error;
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         let unframed_bytes = unframe_bytes(&bytes)?;
         postcard::from_bytes(&unframed_bytes)
-            .map_err(|e| {
+            .map_err(|_e| {
                 crate::Error::Serialization
             })
     }
 }
 
-impl TryFrom<crate::message::Message> for Vec<u8> {
+impl<InternalCommand, InternalEvent> TryFrom<crate::message::Message<InternalCommand, InternalEvent>> for Vec<u8>
+where
+    InternalCommand: serde::de::DeserializeOwned + serde::Serialize,
+    InternalEvent: serde::de::DeserializeOwned + serde::Serialize
+{
     type Error = crate::Error;
-    fn try_from(message: crate::message::Message) -> Result<Self, Self::Error> {
+    fn try_from(message: crate::message::Message<InternalCommand, InternalEvent>) -> Result<Self, Self::Error> {
         let message_bytes = postcard::to_allocvec(&message)
             .map_err(|_| crate::Error::Serialization)?;
         let framed_bytes = frame_bytes(&message_bytes);

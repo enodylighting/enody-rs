@@ -10,13 +10,13 @@ use super::{
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Message<InternalCommand = (), InternalEvent = ()> {
+pub enum Message<InternalCommand, InternalEvent> {
 	Command(CommandMessage<InternalCommand>),
 	Event(EventMessage<InternalEvent>)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CommandMessage<InternalCommand = ()> {
+pub struct CommandMessage<InternalCommand> {
 	pub identifier: Identifier,
 	pub context: Option<Identifier>,
 	pub resource: Option<Identifier>,
@@ -24,7 +24,7 @@ pub struct CommandMessage<InternalCommand = ()> {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Command<InternalCommand = ()> {
+pub enum Command<InternalCommand> {
 	Internal(InternalCommand),
 	Host(HostCommand),
 	Runtime(RuntimeCommand),
@@ -35,7 +35,7 @@ pub enum Command<InternalCommand = ()> {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct EventMessage<InternalEvent = ()> {
+pub struct EventMessage<InternalEvent> {
 	pub identifier: Identifier,
 	pub context: Option<Identifier>,
 	pub resource: Option<Identifier>,
@@ -43,7 +43,7 @@ pub struct EventMessage<InternalEvent = ()> {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Event<InternalEvent = ()> {
+pub enum Event<InternalEvent> {
 	Error(ErrorEvent),
 	Internal(InternalEvent),
 	Host(HostEvent),

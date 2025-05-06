@@ -15,7 +15,7 @@ async fn main() -> Result<(), enody::Error> {
     let devices = usb_monitor.connected_devices();
     if devices.len() > 0 {
         let device = devices[0].clone();
-        let mut runtime = enody::remote::USBRemoteRuntime::open(device, usb_monitor.shutdown_rx()).unwrap();
+        let mut runtime = enody::remote::USBRemoteRuntime::<(), ()>::open(device, usb_monitor.shutdown_rx()).unwrap();
 
         let uuid_gen = |index: u16| {
             let timestamp = uuid::Timestamp::from_gregorian(0, index);

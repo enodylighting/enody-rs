@@ -1,11 +1,16 @@
 use std::{
-    fs::create_dir, sync::{
+    sync::{
         Arc,
         Mutex
-    }, time::Duration
+    },
+    time::Duration
 };
 
 use rusb::UsbContext;
+use serde::{
+    de::DeserializeOwned,
+    Serialize
+};
 use tokio::{
     sync::{
         Mutex as AsyncMutex,
@@ -15,7 +20,14 @@ use tokio::{
     }, task::JoinHandle
 };
 
-use crate::{interface::Recipient, message::EventMessage};
+use crate::{
+    interface::Recipient,
+    message::{
+        CommandMessage,
+        EventMessage,
+        Message
+    }
+};
 
 mod serialization;
 
@@ -51,21 +63,25 @@ fn rusb_log_shim(level: rusb::LogLevel, message: String) {
 }
 
 #[derive(Debug)]
-pub struct CommandResponseRegistration {
+pub struct CommandResponseRegistration<InternalEvent> {
     pub context: crate::Identifier,
-    pub response_tx: Option<oneshot::Sender<EventMessage>>
+    pub response_tx: Option<oneshot::Sender<EventMessage<InternalEvent>>>
 }
 
 #[derive(Debug)]
-pub struct USBRemoteRuntime {
+pub struct USBRemoteRuntime<InternalCommand = (), InternalEvent = ()> {
     device: USBDevice,
     handle: Arc<rusb::DeviceHandle<rusb::Context>>,
     bulk_read_task: JoinHandle<Result<(), crate::Error>>,
-    message_rx: mpsc::Receiver<crate::message::Message>,
-    command_response_registrations: Arc<AsyncMutex<Vec<CommandResponseRegistration>>>
+    message_rx: mpsc::Receiver<crate::message::Message<InternalCommand, InternalEvent>>,
+    command_response_registrations: Arc<AsyncMutex<Vec<CommandResponseRegistration<InternalEvent>>>>
 }
 
-impl USBRemoteRuntime {
+impl<InternalCommand, InternalEvent> USBRemoteRuntime<InternalCommand, InternalEvent>
+where
+    InternalCommand: Clone + DeserializeOwned + Serialize + Send + Sync + 'static,
+    InternalEvent: Clone + DeserializeOwned + Serialize + Send + Sync + 'static
+{
     const USB_INTERFACE: u8 = 1;
     const WRITE_ENDPOINT: u8 = 0x01;
     const READ_ENDPOINT: u8 = 0x81;
@@ -122,7 +138,7 @@ impl USBRemoteRuntime {
 
     pub fn open(device: USBDevice, mut task_shutdown: broadcast::Receiver<()>) -> Result<Self, crate::Error> {
         let handle = Arc::new(Self::initialize_device(device.clone())?);
-        let command_response_registrations: Arc<AsyncMutex<Vec<CommandResponseRegistration>>> =  Arc::new(AsyncMutex::new(Vec::new()));
+        let command_response_registrations: Arc<AsyncMutex<Vec<CommandResponseRegistration<InternalEvent>>>> =  Arc::new(AsyncMutex::new(Vec::new()));
 
         let task_handle = handle.clone();
         let task_command_response_registrations = command_response_registrations.clone();
@@ -152,7 +168,7 @@ impl USBRemoteRuntime {
 
                         // deserialize if at end of frame
                         if byte == serialization::CONTROL_CHAR_ETX && !escaped {
-                            match crate::message::Message::try_from(message_buffer.clone()).map_err(|_| crate::Error::Serialization) {
+                            match Message::<InternalCommand, InternalEvent>::try_from(message_buffer.clone()).map_err(|_| crate::Error::Serialization) {
                                 Ok(message) => {
                                     // check if any commands were waiting for the response
                                     if let crate::message::Message::Event(event) = &message {
@@ -208,14 +224,14 @@ impl USBRemoteRuntime {
         Ok(instance)
     }
 
-    pub async fn next_message(&mut self) -> Result<crate::message::Message, crate::Error> {
+    pub async fn next_message(&mut self) -> Result<crate::message::Message<InternalCommand, InternalEvent>, crate::Error> {
         match self.message_rx.recv().await {
             Some(message) => Ok(message),
             None => Err(crate::Error::Busy)
         }
     }
 
-    pub async fn execute_command(&mut self, command: crate::message::CommandMessage) -> Result<EventMessage, crate::Error> {
+    pub async fn execute_command(&mut self, command: crate::message::CommandMessage<InternalCommand>) -> Result<EventMessage<InternalEvent>, crate::Error> {
         let context = command.identifier.clone();
         let (response_tx, response_rx) = oneshot::channel();
         let response_registration = CommandResponseRegistration {
@@ -235,17 +251,21 @@ impl USBRemoteRuntime {
     }
 }
 
-impl crate::interface::Recipient for USBRemoteRuntime {
-    fn handle_command(&mut self, command: crate::message::CommandMessage) -> Result<(), crate::Error> {
-        let message = crate::message::Message::Command(command);
+impl<InternalCommand, InternalEvent> crate::interface::Recipient<InternalCommand, InternalEvent> for USBRemoteRuntime<InternalCommand, InternalEvent>
+where
+    InternalCommand: Clone + DeserializeOwned + Serialize + Send + Sync + 'static,
+    InternalEvent: Clone + DeserializeOwned + Serialize + Send + Sync + 'static
+{
+    fn handle_command(&mut self, command: CommandMessage<InternalCommand>) -> Result<(), crate::Error> {
+        let message: Message<InternalCommand, InternalEvent> = Message::Command(command);
         let payload: Vec<u8> = Vec::<u8>::try_from(message).unwrap();
         self.handle.write_bulk(Self::WRITE_ENDPOINT, &payload, Duration::ZERO)
             .map(|_| ())
             .map_err(|usb_error| crate::Error::USB(usb_error))
     }
 
-    fn handle_event(&mut self, event: crate::message::EventMessage) -> Result<(), crate::Error> {
-        let message = crate::message::Message::Event(event);
+    fn handle_event(&mut self, event: EventMessage<InternalEvent>) -> Result<(), crate::Error> {
+        let message: Message<InternalCommand, InternalEvent> = Message::Event(event);
         let payload: Vec<u8> = Vec::<u8>::try_from(message).unwrap();
         self.handle.write_bulk(Self::WRITE_ENDPOINT, &payload, Duration::ZERO)
             .map(|_| ())
