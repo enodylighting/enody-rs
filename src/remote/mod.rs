@@ -73,11 +73,7 @@ impl USBRemoteRuntime {
     fn initialize_device(device: USBDevice) -> Result<rusb::DeviceHandle<rusb::Context>, crate::Error> {
         let device_handle = device.device.open()
             .map_err(|_| crate::Error::Debug("failed to open device handle"))?;
-    
-        // Reset the device to a clean state
-        device_handle.reset()
-            .map_err(|_| crate::Error::Debug("failed to reset device handle"))?;
-    
+
         // Detach kernel driver on Linux
         #[cfg(target_os = "linux")]
         if let Ok(active) = device_handle.kernel_driver_active(Self::USB_INTERFACE) {
@@ -88,31 +84,38 @@ impl USBRemoteRuntime {
                 }
             }
         }
-    
+
         // Claim interface for communication
         device_handle.claim_interface(Self::USB_INTERFACE)
             .map_err(|_| crate::Error::Debug("failed to claim USB interface"))?;
 
-        // Clear both RTS and DTR
-        let _ = device_handle.write_control(
-            0x21,
-            0x22,
-            0x00,
-            Self::USB_INTERFACE as u16,
-            &[],
-            Duration::from_millis(100),
-        );
-    
-        // === Activate control signals ===
-        // DTR (0x01) | RTS (0x02) => 0x03
-        device_handle.write_control(
-            0x21,
-            0x22,
-            0x03,
-            Self::USB_INTERFACE as u16,
-            &[],
-            Duration::from_millis(100),
-        ).map_err(|_| crate::Error::Debug("failed to send SET_CONTROL_LINE_STATE"))?;
+        // The usb stack on my development machine does a bunch of other shit when attaching
+        // reset the ESP32-C6 to undo it all and get into a known state.
+        // TODO(carter): Determine what setting is getting doinked to avoid reset.
+        #[cfg(target_os = "linux")]
+        {
+            // Clear Download Flag
+            // RTS = 0 DTR = 0
+            let _ = device_handle.write_control(
+                0x21,
+                0x22,
+                0x00,
+                Self::USB_INTERFACE as u16,
+                &[],
+                Duration::from_millis(100),
+            );
+
+            // Reboot
+            // RTS = 1 DTR = 0
+            let _ = device_handle.write_control(
+                0x21,
+                0x22,
+                0x02,
+                Self::USB_INTERFACE as u16,
+                &[],
+                Duration::from_millis(100),
+            );
+        }
 
         Ok(device_handle)
     }
@@ -165,7 +168,7 @@ impl USBRemoteRuntime {
                                                 }
                                             }
                                         }
-                                        
+
                                         // Then retain only registrations that still have a response_tx
                                         command_response_tx.retain(|registration| {
                                             registration.response_tx.is_some()
@@ -204,7 +207,7 @@ impl USBRemoteRuntime {
 
         Ok(instance)
     }
-    
+
     pub async fn next_message(&mut self) -> Result<crate::message::Message, crate::Error> {
         match self.message_rx.recv().await {
             Some(message) => Ok(message),

@@ -22,7 +22,7 @@ async fn main() -> Result<(), enody::Error> {
             uuid::Uuid::new_v6(timestamp, &[0; 6])
         };
 
-        let led_command = |index: u16, flux: f32| {            
+        let led_command = |index: u16, flux: f32| {
             enody::message::CommandMessage {
                 identifier: uuid::Uuid::new_v4(),
                 context: None,
