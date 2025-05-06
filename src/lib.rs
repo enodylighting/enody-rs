@@ -1,5 +1,13 @@
 pub type Identifier = uuid::Uuid;
-pub type Configuration = ();
+
+#[derive(Clone, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+pub enum Configuration {
+	Blackbody,
+	Chromatic,
+    Flux,
+	Spectral,
+    Manual
+}
 
 pub mod interface;
 pub mod message;

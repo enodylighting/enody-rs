@@ -152,13 +152,14 @@ pub struct FixtureInfo {
 pub enum SourceCommand {
     Info,
     EmitterList(Handle),
-    Display(Configuration),
+    Display(Configuration, Flux),
     Power(PowerCommand)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum SourceEvent {
 	Info(SourceInfo),
+	Display(Configuration, Flux)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -193,12 +194,4 @@ pub enum EmitterEvent {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EmitterInfo {
 	
-}
-
-pub trait Responder {
-	fn handle_command(&mut self, command: CommandMessage);
-	fn handle_event(&mut self, event: EventMessage);
-}
-
-pub trait Runtime: Responder {
 }

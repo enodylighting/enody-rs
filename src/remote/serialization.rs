@@ -59,7 +59,9 @@ impl TryFrom<Vec<u8>> for crate::message::Message {
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         let unframed_bytes = unframe_bytes(&bytes)?;
         postcard::from_bytes(&unframed_bytes)
-            .map_err(|_| crate::Error::Serialization)
+            .map_err(|e| {
+                crate::Error::Serialization
+            })
     }
 }
 
