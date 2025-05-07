@@ -1,4 +1,3 @@
-use enody::interface::Recipient;
 use log;
 use tokio;
 
@@ -8,7 +7,7 @@ async fn main() -> Result<(), enody::Error> {
     log::info!("enody rust example application");
 
     let mut usb_monitor = enody::remote::USBDeviceMonitor::new();
-    usb_monitor.start()?;
+    usb_monitor.start(None)?;
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
@@ -48,9 +47,8 @@ async fn main() -> Result<(), enody::Error> {
         };
 
         let mut toggle_led = async |index| {
-            runtime.execute_command(display_command.clone()).await.unwrap();
-            runtime.execute_command(led_command(index, 0.5)).await.unwrap();
-            runtime.execute_command(led_command(index, 0.0)).await.unwrap();
+            runtime.execute_command(led_command((index + 15) % 16, 0.0)).await.unwrap();
+            runtime.execute_command(led_command(index, 0.1)).await.unwrap();
             runtime.execute_command(display_command.clone()).await.unwrap();
         };
 
@@ -60,7 +58,8 @@ async fn main() -> Result<(), enody::Error> {
                 toggle_led(i as u16 % 16).await;
             }
             let duration = start.elapsed();
-            log::info!("Sent {} commands in {:?} ({:?} per command)", count, duration, duration / count);
+            let fps = count as f64 / duration.as_secs_f64();
+            log::info!("Sent {} commands in {:?} ({:?} per command, {:.2} fps)", count, duration, duration / count, fps);
         };
 
         benchmark(1).await;

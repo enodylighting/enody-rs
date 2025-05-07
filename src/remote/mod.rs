@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     sync::{
         Arc,
         Mutex
@@ -79,8 +80,8 @@ pub struct USBRemoteRuntime<InternalCommand = (), InternalEvent = ()> {
 
 impl<InternalCommand, InternalEvent> USBRemoteRuntime<InternalCommand, InternalEvent>
 where
-    InternalCommand: Clone + DeserializeOwned + Serialize + Send + Sync + 'static,
-    InternalEvent: Clone + DeserializeOwned + Serialize + Send + Sync + 'static
+    InternalCommand: Clone + Debug + DeserializeOwned + Serialize + Send + Sync + 'static,
+    InternalEvent: Clone + Debug + DeserializeOwned + Serialize + Send + Sync + 'static
 {
     const USB_INTERFACE: u8 = 1;
     const WRITE_ENDPOINT: u8 = 0x01;
@@ -189,6 +190,8 @@ where
                                         command_response_tx.retain(|registration| {
                                             registration.response_tx.is_some()
                                         });
+
+                                        log::trace!("event: {:?}", event);
                                     }
 
                                     if let Err(_e) = message_tx.try_send(message) {
@@ -253,8 +256,8 @@ where
 
 impl<InternalCommand, InternalEvent> crate::interface::Recipient<InternalCommand, InternalEvent> for USBRemoteRuntime<InternalCommand, InternalEvent>
 where
-    InternalCommand: Clone + DeserializeOwned + Serialize + Send + Sync + 'static,
-    InternalEvent: Clone + DeserializeOwned + Serialize + Send + Sync + 'static
+    InternalCommand: Clone + Debug + DeserializeOwned + Serialize + Send + Sync + 'static,
+    InternalEvent: Clone + Debug + DeserializeOwned + Serialize + Send + Sync + 'static
 {
     fn handle_command(&mut self, command: CommandMessage<InternalCommand>) -> Result<(), crate::Error> {
         let message: Message<InternalCommand, InternalEvent> = Message::Command(command);
@@ -289,7 +292,7 @@ impl USBDevice {
 }
 
 #[derive(Clone, Debug)]
-enum USBDeviceEvent {
+pub enum USBDeviceEvent {
     Arrived(USBDevice),
     Left(USBDevice),
 }
@@ -358,7 +361,7 @@ impl USBDeviceMonitor {
         }
     }
 
-    pub fn start(&mut self) -> Result<(), crate::Error> {
+    pub fn start(&mut self, event_listener: Option<mpsc::Sender<USBDeviceEvent>>) -> Result<(), crate::Error> {
         // configure the rusb context
         let mut usb_context = rusb::Context::new().map_err(|usb_error| crate::Error::USB(usb_error))?;
         usb_context.set_log_level(RUSB_LOG_LEVEL);
@@ -401,7 +404,8 @@ impl USBDeviceMonitor {
             loop {
                 tokio::select! {
                     Some(event) = device_event_rx.recv() => {
-                        match event {
+                        // maintain the connected device map
+                        match event.clone() {
                             USBDeviceEvent::Arrived(device) => {
                                 let mut devices = task_connected_devices.lock().unwrap();
                                 devices.push(device);
@@ -409,9 +413,15 @@ impl USBDeviceMonitor {
                             },
                             USBDeviceEvent::Left(device) => {
                                 let mut devices = task_connected_devices.lock().unwrap();
-                                let before_count = devices.len();
                                 devices.retain(|d| d != &device);
-                                log::trace!("device removed, count before: {}, after: {}", before_count, devices.len());
+                                log::trace!("device removed, remaining: {}", devices.len());
+                            }
+                        }
+
+                        // notify the listener
+                        if let Some(event_listener) = &event_listener {
+                            if let Err(send_error) = event_listener.send(event).await {
+                                log::error!("failed to send USBDeviceEvent to listener: {:?}", send_error);
                             }
                         }
                     },
