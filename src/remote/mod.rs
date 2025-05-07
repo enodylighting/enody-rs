@@ -20,6 +20,7 @@ use tokio::{
         oneshot
     }, task::JoinHandle
 };
+use uuid::{Uuid, Timestamp};
 
 use crate::{
     interface::Recipient,
@@ -35,6 +36,41 @@ mod serialization;
 const USB_BUFFER_SIZE: usize = 128;
 const MESSAGE_CHANNEL_SIZE: usize = 8;
 const RUSB_LOG_LEVEL: rusb::LogLevel = rusb::LogLevel::None;
+
+pub fn generate_device_uuid(mac_address: &str) -> Result<Uuid, crate::Error> {
+    // Parse the MAC address from string format
+    let mac_bytes = parse_mac_address(mac_address)?;
+
+    // Create a node ID from the MAC address (last 6 bytes of UUID)
+    let mut node_id = [0u8; 6];
+    node_id.copy_from_slice(&mac_bytes);
+
+    // Use Unix epoch (Jan 1, 1970) as the timestamp
+    // UUID timestamp is based on 100-nanosecond intervals since October 15, 1582
+    // We'll use the Unix epoch (January 1, 1970) which is 12,219,292,800 seconds after the UUID epoch
+    let epoch_timestamp = Timestamp::from_unix_time(0, 0, 0, 0);
+
+    // Generate a Version 1 UUID with the counter set to 0 and epoch timestamp
+    let uuid = Uuid::new_v1(epoch_timestamp, &node_id);
+
+    Ok(uuid)
+}
+
+fn parse_mac_address(mac_str: &str) -> Result<[u8; 6], crate::Error> {
+    let parts: Vec<&str> = mac_str.split(':').collect();
+
+    if parts.len() != 6 {
+        return Err(crate::Error::Debug("Invalid MAC address format"));
+    }
+
+    let mut bytes = [0u8; 6];
+    for (i, part) in parts.iter().enumerate() {
+        bytes[i] = u8::from_str_radix(part, 16)
+            .map_err(|_| crate::Error::Debug("Invalid hexadecimal in MAC address"))?;
+    }
+
+    Ok(bytes)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct USBIdentifier {
@@ -225,6 +261,22 @@ where
         };
 
         Ok(instance)
+    }
+
+    pub fn device(&self) -> USBDevice {
+        self.device.clone()
+    }
+
+    pub fn device_serial(&self) -> Result<String, crate::Error> {
+        let descriptor = self.handle.device().device_descriptor()
+            .map_err(|usb_error| crate::Error::USB(usb_error))?;
+        self.handle.read_serial_number_string_ascii(&descriptor)
+            .map_err(|usb_error| crate::Error::USB(usb_error))
+    }
+
+    pub fn device_identifier(&self) -> Result<Uuid, crate::Error> {
+        let serial = self.device_serial()?;
+        generate_device_uuid(&serial)
     }
 
     pub async fn next_message(&mut self) -> Result<crate::message::Message<InternalCommand, InternalEvent>, crate::Error> {
