@@ -1,9 +1,15 @@
 pub type Identifier = uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+pub struct Chromaticity {
+    pub x: f32,
+    pub y: f32
+}
+
+#[derive(Clone, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum Configuration {
 	Blackbody,
-	Chromatic,
+	Chromatic(Chromaticity),
     Flux,
 	Spectral,
     Manual
@@ -22,4 +28,4 @@ pub enum Error {
     Serialization,
     Busy,
     InsufficientData
-}   
+}
