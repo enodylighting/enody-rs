@@ -73,7 +73,7 @@ fn parse_mac_address(mac_str: &str) -> Result<[u8; 6], crate::Error> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct USBIdentifier {
+pub struct USBIdentifier {
     pub name: &'static str,
     pub vendor_id: u16,
     pub product_id: u16,
@@ -340,6 +340,10 @@ impl USBDevice {
             identifier,
             device
         }
+    }
+
+    pub fn identifier(&self) -> USBIdentifier {
+        self.identifier
     }
 }
 

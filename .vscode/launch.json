@@ -41,7 +41,7 @@
             "args": [],
             "cwd": "${workspaceFolder}",
             "env": {
-                "RUST_LOG": "trace"
+                "RUST_LOG": "info"
             }
         },
         {

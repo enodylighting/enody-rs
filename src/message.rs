@@ -2,7 +2,6 @@ use serde::{
 	Deserialize,
 	Serialize
 };
-use tokio::task::Id;
 
 use super::{
     Configuration,
@@ -10,9 +9,25 @@ use super::{
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Message<InternalCommand, InternalEvent> {
+pub enum Message<InternalCommand = (), InternalEvent = ()> {
 	Command(CommandMessage<InternalCommand>),
 	Event(EventMessage<InternalEvent>)
+}
+
+#[repr(usize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum LogLevel {
+    Error = 1,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct LogEvent {
+    pub level: LogLevel,
+    pub output: String
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -24,7 +39,7 @@ pub struct CommandMessage<InternalCommand> {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Command<InternalCommand> {
+pub enum Command<InternalCommand = ()> {
 	Internal(InternalCommand),
 	Host(HostCommand),
 	Runtime(RuntimeCommand),
@@ -43,8 +58,8 @@ pub struct EventMessage<InternalEvent> {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Event<InternalEvent> {
-	Error(ErrorEvent),
+pub enum Event<InternalEvent = ()> {
+	Error,
 	Internal(InternalEvent),
 	Host(HostEvent),
 	Runtime(RuntimeEvent),
@@ -100,6 +115,8 @@ pub enum RuntimeCommand {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum RuntimeEvent {
 	Info(RuntimeInfo),
+	Log(LogEvent),
+	Interaction(InteractionEvent),
     EnvironmentEnter(EnvironmentInfo),
     EnvironmentExit(EnvironmentInfo),
 }
@@ -108,6 +125,24 @@ pub enum RuntimeEvent {
 pub struct RuntimeInfo {
 
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum InteractionEvent {
+    Gesture(GestureEvent)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum GestureEvent {
+	HoldContinue,
+	HoldEnd,
+    SingleTap,
+    SingleTapHold,
+    DoubleTap,
+    DoubleTapHold,
+    TripleTap,
+    TripleTapHold
+}
+
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EnvironmentCommand {
