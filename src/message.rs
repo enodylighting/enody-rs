@@ -102,7 +102,15 @@ pub enum HostEvent {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SoftwareVersion {
+	major: u8,
+	minor: u8,
+	patch: u16
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HostInfo {
+	pub sw_version: SoftwareVersion,
 	pub identifier: Identifier
 }
 
