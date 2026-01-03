@@ -1,6 +1,6 @@
 use enody::{
-    message::{Command, CommandMessage, Flux, Message},
-    remote::{USBDevice, USBDeviceEvent, USBRemoteRuntime}, Chromaticity, Configuration,
+    message::{Chromaticity, Command, CommandMessage, Configuration, Flux, Message},
+    remote::{USBDevice, USBDeviceEvent, USBRemoteRuntime}
 };
 use log;
 use tokio::{

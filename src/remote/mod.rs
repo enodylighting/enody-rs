@@ -60,13 +60,13 @@ fn parse_mac_address(mac_str: &str) -> Result<[u8; 6], crate::Error> {
     let parts: Vec<&str> = mac_str.split(':').collect();
 
     if parts.len() != 6 {
-        return Err(crate::Error::Debug("Invalid MAC address format"));
+        return Err(crate::Error::Debug("Invalid MAC address format".to_string()));
     }
 
     let mut bytes = [0u8; 6];
     for (i, part) in parts.iter().enumerate() {
         bytes[i] = u8::from_str_radix(part, 16)
-            .map_err(|_| crate::Error::Debug("Invalid hexadecimal in MAC address"))?;
+            .map_err(|_| crate::Error::Debug("Invalid hexadecimal in MAC address".to_string()))?;
     }
 
     Ok(bytes)
@@ -125,7 +125,7 @@ where
 
     fn initialize_device(device: USBDevice) -> Result<rusb::DeviceHandle<rusb::Context>, crate::Error> {
         let device_handle = device.device.open()
-            .map_err(|_| crate::Error::Debug("failed to open device handle"))?;
+            .map_err(|_| crate::Error::Debug("failed to open device handle".to_string()))?;
 
         // Detach kernel driver on Linux
         #[cfg(target_os = "linux")]
@@ -140,7 +140,7 @@ where
 
         // Claim interface for communication
         device_handle.claim_interface(Self::USB_INTERFACE)
-            .map_err(|_| crate::Error::Debug("failed to claim USB interface"))?;
+            .map_err(|_| crate::Error::Debug("failed to claim USB interface".to_string()))?;
 
         // The usb stack on my development machine does a bunch of other shit when attaching
         // reset the ESP32-C6 to undo it all and get into a known state.
@@ -302,7 +302,7 @@ where
         self.handle_command(command)?;
 
         response_rx.await
-            .map_err(|e| crate::Error::Debug("failed waiting for command response event"))
+            .map_err(|e| crate::Error::Debug("failed waiting for command response event".to_string()))
     }
 }
 
@@ -496,7 +496,7 @@ impl USBDeviceMonitor {
     pub async fn stop(&mut self) -> Result<(), crate::Error> {
         // notify all child tasks to shutdown
         if let Err(_e) = self.task_shutdown.send(()) {
-            let error = crate::Error::Debug("failed to send USBDeviceMonitor shutdown");
+            let error = crate::Error::Debug("failed to send USBDeviceMonitor shutdown".to_string());
             return Err(error);
         }
 
@@ -505,7 +505,7 @@ impl USBDeviceMonitor {
             let task_result = task.await;
             match task_result {
                 Ok(Err(e)) => { return Err(e); },
-                Err(_e) => { return Err(crate::Error::Debug("failed to join hotplug monitor task")); },
+                Err(_e) => { return Err(crate::Error::Debug("failed to join hotplug monitor task".to_string())); },
                 _ => {}
             };
         }
@@ -514,7 +514,7 @@ impl USBDeviceMonitor {
             let task_result = task.await;
             match task_result {
                 Ok(Err(e)) => { return Err(e); },
-                Err(_e) => { return Err(crate::Error::Debug("failed to join device event task")); },
+                Err(_e) => { return Err(crate::Error::Debug("failed to join device event task".to_string())); },
                 _ => {}
             };
         }

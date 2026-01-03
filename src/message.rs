@@ -3,31 +3,46 @@ use serde::{
 	Serialize
 };
 
-use super::{
-    Configuration,
-    Identifier
-};
+use super::Identifier;
+
+pub type Measurement = f32;
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub enum Flux {
+	Relative(Measurement)
+}
+
+#[derive(Clone, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+pub struct Chromaticity {
+    pub x: Measurement,
+    pub y: Measurement
+}
+
+#[derive(Clone, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+pub enum Configuration {
+    Flux,
+	Blackbody(Measurement),
+	Chromatic(Chromaticity),
+    Spectral,
+    Manual
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Version {
+	major: u8,
+	minor: u8,
+	patch: u16
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Handle {
+	pub identifier: Identifier
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Message<InternalCommand = (), InternalEvent = ()> {
 	Command(CommandMessage<InternalCommand>),
 	Event(EventMessage<InternalEvent>)
-}
-
-#[repr(usize)]
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum LogLevel {
-    Error = 1,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct LogEvent {
-    pub level: LogLevel,
-    pub output: String
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -59,7 +74,7 @@ pub struct EventMessage<InternalEvent> {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Event<InternalEvent = ()> {
-	Error,
+	Error(crate::Error),
 	Internal(InternalEvent),
 	Host(HostEvent),
 	Runtime(RuntimeEvent),
@@ -70,30 +85,8 @@ pub enum Event<InternalEvent = ()> {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Handle {
-	pub identifier: Option<Identifier>
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct PowerInfo {
-	
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum PowerCommand {
-	Info(PowerInfo),
-	Limit,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum ErrorEvent {
-	Unknown
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum HostCommand {
-	Info,
-	Reboot
+	Info
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -102,139 +95,121 @@ pub enum HostEvent {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SoftwareVersion {
-	major: u8,
-	minor: u8,
-	patch: u16
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HostInfo {
-	pub sw_version: SoftwareVersion,
+	pub version: Version,
 	pub identifier: Identifier
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum RuntimeCommand {
 	Info,
-	EnvironmentList(Handle),
+	EnvironmentList(Option<Handle>)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum RuntimeEvent {
 	Info(RuntimeInfo),
 	Log(LogEvent),
-	Interaction(InteractionEvent),
-    EnvironmentEnter(EnvironmentInfo),
-    EnvironmentExit(EnvironmentInfo),
+	EnvironmentList(Handle, Option<EnvironmentInfo>)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RuntimeInfo {
-
+	pub version: Version,
+	pub identifier: Identifier
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum InteractionEvent {
-    Gesture(GestureEvent)
+pub struct LogEvent {
+    pub level: LogLevel,
+    pub output: String
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum GestureEvent {
-	HoldContinue,
-	HoldEnd,
-    SingleTap,
-    SingleTapHold,
-    DoubleTap,
-    DoubleTapHold,
-    TripleTap,
-    TripleTapHold
+#[repr(usize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum LogLevel {
+    Error = 1,
+    Warn,
+    Info,
+    Debug,
+    Trace
 }
-
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EnvironmentCommand {
 	Info,
-	FixtureList(Handle),
-	Display(Configuration),
-	Power(PowerCommand)
+	EnvironmentList(Handle, Option<EnvironmentInfo>),
+	FixtureList(Option<Handle>),
+	Display(Configuration, Flux)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EnvironmentEvent {
     Info(EnvironmentInfo),
-    FixtureEnter(FixtureInfo),
-    FixtureExit(FixtureInfo)
+	EnvironmentList(Handle, Option<EnvironmentInfo>),
+	FixtureList(Handle, Option<FixtureInfo>),
+	Display(Configuration, Flux)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentInfo {
-
+	pub identifier: Identifier,
+	pub fixture_count: usize
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum FixtureCommand {
 	Info,
-	SourceList(Handle),
-	Display(Configuration),
-	Power(PowerCommand),
+	SourceList(Option<Handle>),
+	Display(Configuration, Flux)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum FixtureEvent {
 	Info(FixtureInfo),
-	SourceList(Handle, SourceInfo),
+	SourceList(Handle, Option<SourceInfo>),
+	Display(Configuration, Flux)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FixtureInfo {
-
+	pub identifier: Identifier
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum SourceCommand {
     Info,
-    EmitterList(Handle),
-    Display(Configuration, Flux),
-    Power(PowerCommand)
+    EmitterList(Option<Handle>),
+    Display(Configuration, Flux)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum SourceEvent {
 	Info(SourceInfo),
+	EmitterList(Handle, Option<EmitterInfo>),
 	Display(Configuration, Flux)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SourceInfo {
-
-}
-
-pub type Measurement = f32;
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Flux {
-	Relative(Measurement),
-	Absolute(Measurement)
+	pub identifier: Identifier
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EmitterCommand {
 	Info,
 	FluxRange,
-	FluxSet(Flux),
-	CharacteristicSpectralDistribution(Handle, u32)
+	FluxSet(Flux)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EmitterEvent {
 	Info(EmitterInfo),
-	FluxRange(u32, u32),
-	FluxSet(Flux),
-	CharacteristicSpectralDistribution(Handle, Vec<(f32, f32)>)
+	FluxRange(Flux, Flux),
+	FluxSet(Flux)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EmitterInfo {
-	
+	identifier: Identifier
 }
