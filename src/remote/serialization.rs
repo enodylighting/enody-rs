@@ -2,6 +2,8 @@ pub const CONTROL_CHAR_STX: u8 = 0x02;
 pub const CONTROL_CHAR_ETX: u8 = 0x03;
 pub const CONTROL_CHAR_DLE: u8 = 0x10;
 
+pub const FRAME_SIZE_MIN: usize = 2; // (STX + ETX)
+
 fn escaped_bytes(payload: &[u8]) -> Vec<u8> {
     let mut escaped_bytes = Vec::with_capacity(payload.len() * 2);
     for byte in payload {
@@ -11,14 +13,6 @@ fn escaped_bytes(payload: &[u8]) -> Vec<u8> {
         escaped_bytes.push(*byte);
     }
     escaped_bytes
-}
-
-fn frame_bytes(payload: &[u8]) -> Vec<u8> {
-    let mut frame_bytes = Vec::with_capacity((payload.len() * 2) + 2);
-    frame_bytes.push(CONTROL_CHAR_STX);
-    frame_bytes.extend(escaped_bytes(payload));
-    frame_bytes.push(CONTROL_CHAR_ETX);
-    frame_bytes
 }
 
 fn unescape_bytes(escaped: &[u8]) -> Vec<u8> {
@@ -38,9 +32,17 @@ fn unescape_bytes(escaped: &[u8]) -> Vec<u8> {
     unescaped
 }
 
+fn frame_bytes(payload: &[u8]) -> Vec<u8> {
+    let mut frame_bytes = Vec::with_capacity((payload.len() * 2) + 2);
+    frame_bytes.push(CONTROL_CHAR_STX);
+    frame_bytes.extend(escaped_bytes(payload));
+    frame_bytes.push(CONTROL_CHAR_ETX);
+    frame_bytes
+}
+
 fn unframe_bytes(frame: &[u8]) -> Result<Vec<u8>, crate::Error> {
-    // Check minimum frame size (STX + ETX)
-    if frame.len() < 2 {
+    // Check minimum frame size
+    if frame.len() < FRAME_SIZE_MIN {
         return Err(crate::Error::InsufficientData);
     }
 

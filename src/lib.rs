@@ -1,4 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+#![feature(new_range_api)]
 
 pub mod interface;
 pub mod message;

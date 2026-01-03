@@ -15,7 +15,7 @@ use serde::{
 use tokio::{
     sync::{
         Mutex as AsyncMutex,
-        broadcast,
+        broadcast::{self, Receiver},
         mpsc,
         oneshot
     }, task::JoinHandle
@@ -34,43 +34,8 @@ use crate::{
 mod serialization;
 
 const USB_BUFFER_SIZE: usize = 128;
-const MESSAGE_CHANNEL_SIZE: usize = 8;
+const MESSAGE_CHANNEL_SIZE: usize = 64;
 const RUSB_LOG_LEVEL: rusb::LogLevel = rusb::LogLevel::None;
-
-pub fn generate_device_uuid(mac_address: &str) -> Result<Uuid, crate::Error> {
-    // Parse the MAC address from string format
-    let mac_bytes = parse_mac_address(mac_address)?;
-
-    // Create a node ID from the MAC address (last 6 bytes of UUID)
-    let mut node_id = [0u8; 6];
-    node_id.copy_from_slice(&mac_bytes);
-
-    // Use Unix epoch (Jan 1, 1970) as the timestamp
-    // UUID timestamp is based on 100-nanosecond intervals since October 15, 1582
-    // We'll use the Unix epoch (January 1, 1970) which is 12,219,292,800 seconds after the UUID epoch
-    let epoch_timestamp = Timestamp::from_unix_time(0, 0, 0, 0);
-
-    // Generate a Version 1 UUID with the counter set to 0 and epoch timestamp
-    let uuid = Uuid::new_v1(epoch_timestamp, &node_id);
-
-    Ok(uuid)
-}
-
-fn parse_mac_address(mac_str: &str) -> Result<[u8; 6], crate::Error> {
-    let parts: Vec<&str> = mac_str.split(':').collect();
-
-    if parts.len() != 6 {
-        return Err(crate::Error::Debug("Invalid MAC address format".to_string()));
-    }
-
-    let mut bytes = [0u8; 6];
-    for (i, part) in parts.iter().enumerate() {
-        bytes[i] = u8::from_str_radix(part, 16)
-            .map_err(|_| crate::Error::Debug("Invalid hexadecimal in MAC address".to_string()))?;
-    }
-
-    Ok(bytes)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct USBIdentifier {
@@ -111,7 +76,8 @@ pub struct USBRemoteRuntime<InternalCommand = (), InternalEvent = ()> {
     handle: Arc<rusb::DeviceHandle<rusb::Context>>,
     bulk_read_task: JoinHandle<Result<(), crate::Error>>,
     message_rx: mpsc::Receiver<crate::message::Message<InternalCommand, InternalEvent>>,
-    command_response_registrations: Arc<AsyncMutex<Vec<CommandResponseRegistration<InternalEvent>>>>
+    command_response_registrations: Arc<AsyncMutex<Vec<CommandResponseRegistration<InternalEvent>>>>,
+    shutdown: broadcast::Sender<()>
 }
 
 impl<InternalCommand, InternalEvent> USBRemoteRuntime<InternalCommand, InternalEvent>
@@ -173,13 +139,15 @@ where
         Ok(device_handle)
     }
 
-    pub fn open(device: USBDevice, mut task_shutdown: broadcast::Receiver<()>) -> Result<Self, crate::Error> {
+    pub fn connect(device: USBDevice) -> Result<Self, crate::Error> {
         let handle = Arc::new(Self::initialize_device(device.clone())?);
+        let (shutdown, _) = broadcast::channel(1);
         let command_response_registrations: Arc<AsyncMutex<Vec<CommandResponseRegistration<InternalEvent>>>> =  Arc::new(AsyncMutex::new(Vec::new()));
 
         let task_handle = handle.clone();
+        let mut task_shutdown = shutdown.subscribe();
         let task_command_response_registrations = command_response_registrations.clone();
-        let (message_tx, message_rx) = mpsc::channel(64);
+        let (message_tx, message_rx) = mpsc::channel(MESSAGE_CHANNEL_SIZE);
 
         let bulk_read_task = tokio::task::spawn_blocking(move || {
             let mut message_buffer = Vec::<u8>::new();
@@ -257,10 +225,22 @@ where
             handle,
             bulk_read_task,
             message_rx,
-            command_response_registrations
+            command_response_registrations,
+            shutdown
         };
 
         Ok(instance)
+    }
+
+    pub fn disconnect(self) -> Result<(), crate::Error> {
+        self.shutdown.send(())
+            .map_err(|e| { crate::Error::Debug(format!("failed to send shutdown message: {}", e).to_string()) })?;
+
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.bulk_read_task)
+        }).map_err(|e| crate::Error::Debug(format!("failed to join bulk read task: {}", e)))??;
+
+        Ok(())
     }
 
     pub fn device(&self) -> USBDevice {
@@ -272,11 +252,6 @@ where
             .map_err(|usb_error| crate::Error::USB(usb_error))?;
         self.handle.read_serial_number_string_ascii(&descriptor)
             .map_err(|usb_error| crate::Error::USB(usb_error))
-    }
-
-    pub fn device_identifier(&self) -> Result<Uuid, crate::Error> {
-        let serial = self.device_serial()?;
-        generate_device_uuid(&serial)
     }
 
     pub async fn next_message(&mut self) -> Result<crate::message::Message<InternalCommand, InternalEvent>, crate::Error> {
@@ -294,10 +269,9 @@ where
             response_tx: Some(response_tx)
         };
 
-        {
-            let mut registration_buffer = self.command_response_registrations.lock().await;
-            registration_buffer.push(response_registration);
-        }
+        let mut registration_buffer = self.command_response_registrations.lock().await;
+        registration_buffer.push(response_registration);
+        drop(registration_buffer);
 
         self.handle_command(command)?;
 
@@ -344,6 +318,35 @@ impl USBDevice {
 
     pub fn identifier(&self) -> USBIdentifier {
         self.identifier
+    }
+
+    /// Enumerates all currently attached USB devices that match identifiers in ALL_IDENTIFIERS.
+    /// Returns a vector of USBDevice instances for all matching devices found.
+    pub fn attached() -> Result<Vec<Self>, crate::Error> {
+        let context = rusb::Context::new()
+            .map_err(|usb_error| crate::Error::USB(usb_error))?;
+
+        let devices = context.devices()
+            .map_err(|usb_error| crate::Error::USB(usb_error))?;
+
+        let mut attached_devices = Vec::new();
+
+        for device in devices.iter() {
+            if let Ok(descriptor) = device.device_descriptor() {
+                let vendor_id = descriptor.vendor_id();
+                let product_id = descriptor.product_id();
+
+                // Check if this device matches any identifier in ALL_IDENTIFIERS
+                for identifier in ALL_IDENTIFIERS.iter() {
+                    if identifier.vendor_id == vendor_id && identifier.product_id == product_id {
+                        attached_devices.push(USBDevice::new(*identifier, device));
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(attached_devices)
     }
 }
 
