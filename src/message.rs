@@ -34,6 +34,12 @@ pub struct Version {
 	patch: u16
 }
 
+impl core::fmt::Display for Version {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+	}
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Handle {
 	pub identifier: Identifier
@@ -51,6 +57,42 @@ pub struct CommandMessage<InternalCommand> {
 	pub context: Option<Identifier>,
 	pub resource: Option<Identifier>,
 	pub command: Command<InternalCommand>
+}
+
+impl<InternalCommand> CommandMessage<InternalCommand> {
+    pub fn root(command: Command<InternalCommand>, resource: Option<Identifier>) -> Self {
+        Self {
+            identifier: uuid::Uuid::new_v4(),
+            context: None,
+            resource,
+            command
+        }
+    }
+
+    pub fn child(&self, command: Command<InternalCommand>, resource: Option<Identifier>) -> Self {
+        Self {
+            identifier: uuid::Uuid::new_v4(),
+            context: Some(self.identifier.clone()),
+            resource,
+            command
+        }
+    }
+
+    pub fn identifier(&self) -> &Identifier {
+        &self.identifier
+    }
+
+    pub fn context(&self) -> Option<Identifier> {
+        self.context.clone()
+    }
+
+    pub fn resource(&self) -> Option<Identifier> {
+        self.resource.clone()
+    }
+
+    pub fn action(&self) -> &Command<InternalCommand> {
+        &self.command
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -17,5 +17,6 @@ pub enum Error {
     USB(rusb::Error),
     Serialization,
     Busy,
-    InsufficientData
+    InsufficientData,
+    UnexpectedResponse
 }

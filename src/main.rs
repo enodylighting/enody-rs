@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use enody::remote::{USBDevice, USBRemoteRuntime};
+use enody::remote::RemoteHost;
 use log;
 
 #[derive(Parser)]
@@ -14,30 +14,31 @@ struct EnodyCLI {
 enum Commands {
     /// List all attached Enody devices
     List,
+
+    /// Update selected device to newest firmware
+    Update,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<enody::Error>> {
     env_logger::init();
-    log::info!("enody rust CLI application");
 
     let cli = EnodyCLI::parse();
-
     match cli.command {
-        Commands::List => list_devices()?,
+        Commands::List => list_devices().await?,
+        Commands::Update => update_remote_host().await?
     }
 
     Ok(())
 }
 
-fn list_devices() -> Result<(), Box<enody::Error>> {
-    let devices = USBDevice::attached();
+async fn list_devices() -> Result<(), Box<enody::Error>> {
+    let devices = RemoteHost::attached();
     match devices {
         Ok(devices) => {
             for device in devices {
-                let remote_runtime: USBRemoteRuntime<(), ()> = USBRemoteRuntime::connect(device)?;
-                println!("Device: {:?}", remote_runtime.device_serial());
-                remote_runtime.disconnect()?;
+                println!("Device {}", device.identifier().await?);
+                println!("\tVersion: {}", device.version().await?);
             }
         }
         Err(e) => {
@@ -47,3 +48,6 @@ fn list_devices() -> Result<(), Box<enody::Error>> {
     Ok(())
 }
 
+async fn update_remote_host() -> Result<(), Box<enody::Error>> {
+    Ok(())
+}
