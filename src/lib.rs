@@ -1,5 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![feature(new_range_api)]
+#[allow(async_fn_in_trait)]
 
 pub mod interface;
 pub mod message;

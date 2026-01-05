@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use enody::remote::RemoteHost;
+use enody::remote::RemoteRuntime;
 use log;
 
 #[derive(Parser)]
@@ -33,12 +33,13 @@ async fn main() -> Result<(), Box<enody::Error>> {
 }
 
 async fn list_devices() -> Result<(), Box<enody::Error>> {
-    let devices = RemoteHost::attached();
-    match devices {
-        Ok(devices) => {
-            for device in devices {
-                println!("Device {}", device.identifier().await?);
-                println!("\tVersion: {}", device.version().await?);
+    let runtimes = RemoteRuntime::attached();
+    match runtimes {
+        Ok(mut runtimes) => {
+            for runtime in runtimes.iter_mut() {
+                let host = runtime.host();
+                println!("Device {}", host.identifier().await?);
+                println!("\tVersion: {}", host.version().await?);
             }
         }
         Err(e) => {
@@ -49,5 +50,6 @@ async fn list_devices() -> Result<(), Box<enody::Error>> {
 }
 
 async fn update_remote_host() -> Result<(), Box<enody::Error>> {
+    
     Ok(())
 }

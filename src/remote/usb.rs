@@ -22,7 +22,6 @@ use tokio::{
 };
 
 use crate::{
-    interface::Recipient,
     message::{
         CommandMessage,
         EventMessage,
@@ -69,7 +68,7 @@ pub struct CommandResponseRegistration<InternalEvent> {
 }
 
 #[derive(Debug)]
-pub struct USBRemoteHost<InternalCommand = (), InternalEvent = ()> {
+pub struct USBRemoteRuntime<InternalCommand = (), InternalEvent = ()> {
     device: USBDevice,
     handle: Arc<rusb::DeviceHandle<rusb::Context>>,
     message_rx: mpsc::Receiver<crate::message::Message<InternalCommand, InternalEvent>>,
@@ -78,7 +77,7 @@ pub struct USBRemoteHost<InternalCommand = (), InternalEvent = ()> {
     shutdown: broadcast::Sender<()>
 }
 
-impl<InternalCommand, InternalEvent> USBRemoteHost<InternalCommand, InternalEvent>
+impl<InternalCommand, InternalEvent> USBRemoteRuntime<InternalCommand, InternalEvent>
 where
     InternalCommand: Clone + Debug + DeserializeOwned + Serialize + Send + Sync + 'static,
     InternalEvent: Clone + Debug + DeserializeOwned + Serialize + Send + Sync + 'static
@@ -282,16 +281,10 @@ where
         self.handle_command(command)?;
 
         response_rx.await
-            .map_err(|e| crate::Error::Debug("failed waiting for command response event".to_string()))
+            .map_err(|_e| crate::Error::Debug("failed waiting for command response event".to_string()))
     }
-}
 
-impl<InternalCommand, InternalEvent> crate::interface::Recipient<InternalCommand, InternalEvent> for USBRemoteHost<InternalCommand, InternalEvent>
-where
-    InternalCommand: Clone + Debug + DeserializeOwned + Serialize + Send + Sync + 'static,
-    InternalEvent: Clone + Debug + DeserializeOwned + Serialize + Send + Sync + 'static
-{
-    fn handle_command(&mut self, command: CommandMessage<InternalCommand>) -> Result<(), crate::Error> {
+    pub fn handle_command(&mut self, command: CommandMessage<InternalCommand>) -> Result<(), crate::Error> {
         let message: Message<InternalCommand, InternalEvent> = Message::Command(command);
         let payload: Vec<u8> = Vec::<u8>::try_from(message).unwrap();
         self.handle.write_bulk(Self::WRITE_ENDPOINT, &payload, Duration::ZERO)
@@ -299,7 +292,7 @@ where
             .map_err(|usb_error| crate::Error::USB(usb_error))
     }
 
-    fn handle_event(&mut self, event: EventMessage<InternalEvent>) -> Result<(), crate::Error> {
+    pub fn handle_event(&mut self, event: EventMessage<InternalEvent>) -> Result<(), crate::Error> {
         let message: Message<InternalCommand, InternalEvent> = Message::Event(event);
         let payload: Vec<u8> = Vec::<u8>::try_from(message).unwrap();
         self.handle.write_bulk(Self::WRITE_ENDPOINT, &payload, Duration::ZERO)
