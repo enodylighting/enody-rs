@@ -72,7 +72,7 @@ pub struct USBRemoteRuntime<InternalCommand = (), InternalEvent = ()> {
     device: USBDevice,
     handle: Arc<rusb::DeviceHandle<rusb::Context>>,
     message_rx: mpsc::Receiver<crate::message::Message<InternalCommand, InternalEvent>>,
-    message_rx_task: JoinHandle<Result<(), crate::Error>>,
+    message_rx_task: Option<JoinHandle<Result<(), crate::Error>>>,
     command_response_registrations: Arc<AsyncMutex<Vec<CommandResponseRegistration<InternalEvent>>>>,
     shutdown: broadcast::Sender<()>
 }
@@ -221,7 +221,7 @@ where
             device,
             handle,
             message_rx,
-            message_rx_task,
+            message_rx_task: Some(message_rx_task),
             command_response_registrations,
             shutdown
         };
@@ -229,13 +229,15 @@ where
         Ok(instance)
     }
 
-    pub fn disconnect(self) -> Result<(), crate::Error> {
+    pub fn disconnect(&mut self) -> Result<(), crate::Error> {
         self.shutdown.send(())
             .map_err(|e| { crate::Error::Debug(format!("failed to send shutdown message: {}", e).to_string()) })?;
 
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.message_rx_task)
-        }).map_err(|e| crate::Error::Debug(format!("failed to join message_rx_task: {}", e)))??;
+        if let Some(task) = self.message_rx_task.take() {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(task)
+            }).map_err(|e| crate::Error::Debug(format!("failed to join message_rx_task: {}", e)))??;
+        }
 
         Ok(())
     }
@@ -298,6 +300,18 @@ where
         self.handle.write_bulk(Self::WRITE_ENDPOINT, &payload, Duration::ZERO)
             .map(|_| ())
             .map_err(|usb_error| crate::Error::USB(usb_error))
+    }
+}
+
+impl<InternalCommand, InternalEvent> Drop for USBRemoteRuntime<InternalCommand, InternalEvent> {
+    fn drop(&mut self) {
+        // Signal the background task to shutdown
+        let _ = self.shutdown.send(());
+
+        // Abort the task to ensure it stops even if blocked on USB read
+        if let Some(task) = self.message_rx_task.take() {
+            task.abort();
+        }
     }
 }
 

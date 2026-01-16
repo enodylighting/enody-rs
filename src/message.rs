@@ -7,18 +7,18 @@ use super::Identifier;
 
 pub type Measurement = f32;
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Flux {
 	Relative(Measurement)
 }
 
-#[derive(Clone, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Chromaticity {
     pub x: Measurement,
     pub y: Measurement
 }
 
-#[derive(Clone, Debug, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Configuration {
     Flux,
 	Blackbody(Measurement),
@@ -38,11 +38,6 @@ impl core::fmt::Display for Version {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
 		write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
 	}
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Handle {
-	pub identifier: Identifier
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -128,12 +123,16 @@ pub enum Event<InternalEvent = ()> {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum HostCommand {
-	Info
+	Info,
+	FixtureCount,
+	FixtureInfo(u32)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum HostEvent {
 	Info(HostInfo),
+	FixtureCount(u32),
+	FixtureInfo(FixtureInfo)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -143,16 +142,111 @@ pub struct HostInfo {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum FixtureCommand {
+	Info,
+	Display(Configuration, Flux),
+	SourceCount,
+	SourceInfo(u32)
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum FixtureEvent {
+	Info(FixtureInfo),
+	Display(Configuration, Flux),
+	SourceCount(u32),
+	SourceInfo(SourceInfo)
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FixtureInfo {
+	pub identifier: Identifier
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum SourceCommand {
+    Info,
+	Display(Configuration, Flux),
+	EmitterCount,
+    EmitterInfo(u32)
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum SourceEvent {
+	Info(SourceInfo),
+	Display(Configuration, Flux),
+	EmitterCount(u32),
+	EmitterInfo(EmitterInfo)
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SourceInfo {
+	pub identifier: Identifier
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum EmitterCommand {
+	Info,
+	FluxRange,
+	FluxSet(Flux),
+	SpectralData(Flux)
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum EmitterEvent {
+	Info(EmitterInfo),
+	FluxRange(Flux, Flux),
+	FluxSet(Flux),
+	SpectralData(SpectralDataInfo, Flux)
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EmitterInfo {
+	identifier: Identifier
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum SpectralDataCommand {
+	Info,
+	SampleCount,
+	Sample(u32),
+	SampleBatch(u32, u32)
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum SpectralDataEvent {
+	Info(SpectralDataInfo),
+	SampleCount(u32),
+	Sample(SpectralSample),
+	SampleBatch(Vec<SpectralSample>) // TODO(carter): going to need to use heapless for no_std
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SpectralDataInfo {
+	identifier: Identifier,
+	domain: (Measurement, Measurement)
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SpectralSample {
+	wavelength: Measurement,
+	measurement: Measurement
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum RuntimeCommand {
 	Info,
-	EnvironmentList(Option<Handle>)
+	Host,
+	EnvironmentCount,
+	EnvironmentInfo(u32)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum RuntimeEvent {
 	Info(RuntimeInfo),
 	Log(LogEvent),
-	EnvironmentList(Handle, Option<EnvironmentInfo>)
+	Host(HostInfo),
+	EnvironmentCount(u32),
+	EnvironmentInfo(EnvironmentInfo)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -167,7 +261,7 @@ pub struct LogEvent {
     pub output: String
 }
 
-#[repr(usize)]
+#[repr(u8)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum LogLevel {
     Error = 1,
@@ -180,78 +274,24 @@ pub enum LogLevel {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EnvironmentCommand {
 	Info,
-	EnvironmentList(Handle, Option<EnvironmentInfo>),
-	FixtureList(Option<Handle>),
-	Display(Configuration, Flux)
+	Display(Configuration, Flux),
+	RuntimeCount,
+	RuntimeInfo(u32),
+	FixtureCount,
+	FixtureInfo(u32)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EnvironmentEvent {
     Info(EnvironmentInfo),
-	EnvironmentList(Handle, Option<EnvironmentInfo>),
-	FixtureList(Handle, Option<FixtureInfo>),
-	Display(Configuration, Flux)
+	Display(Configuration, Flux),
+	RuntimeCount(u32),
+	RuntimeInfo(RuntimeInfo),
+	FixtureCount(u32),
+	FixtureInfo(FixtureInfo, u32)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentInfo {
-	pub identifier: Identifier,
-	pub fixture_count: usize
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum FixtureCommand {
-	Info,
-	SourceList(Option<Handle>),
-	Display(Configuration, Flux)
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum FixtureEvent {
-	Info(FixtureInfo),
-	SourceList(Handle, Option<SourceInfo>),
-	Display(Configuration, Flux)
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct FixtureInfo {
 	pub identifier: Identifier
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum SourceCommand {
-    Info,
-    EmitterList(Option<Handle>),
-    Display(Configuration, Flux)
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum SourceEvent {
-	Info(SourceInfo),
-	EmitterList(Handle, Option<EmitterInfo>),
-	Display(Configuration, Flux)
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SourceInfo {
-	pub identifier: Identifier
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum EmitterCommand {
-	Info,
-	FluxRange,
-	FluxSet(Flux)
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum EmitterEvent {
-	Info(EmitterInfo),
-	FluxRange(Flux, Flux),
-	FluxSet(Flux)
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct EmitterInfo {
-	identifier: Identifier
 }

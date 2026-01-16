@@ -35,7 +35,7 @@ impl RemoteRuntime {
 
     pub fn disconnect(&mut self) -> Result<(), crate::Error> {
         if let Some(usb_remote_runtime) = self.usb_remote_runtime.take() {
-            let usb_remote_runtime = usb_remote_runtime.into_inner()
+            let mut usb_remote_runtime = usb_remote_runtime.into_inner()
                 .map_err(|_e| { crate::Error::Debug("Disconnect called while usb_remote_runtime lock held".to_string())})?;
             usb_remote_runtime.disconnect()?;
         }
