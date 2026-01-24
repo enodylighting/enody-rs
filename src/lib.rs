@@ -11,13 +11,17 @@ pub mod remote;
 
 pub type Identifier = uuid::Uuid;
 
+#[cfg(feature = "std")]
+pub type USBError = rusb::Error;
+#[cfg(not(feature = "std"))]
+pub type USBError = ();
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Error {
     Unknown,
     Debug(String),
     Unsupported,
-    #[cfg(feature = "std")]
-    USB(rusb::Error),
+    USB(USBError),
     Serialization,
     Busy,
     InsufficientData,
