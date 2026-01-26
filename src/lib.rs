@@ -8,8 +8,18 @@ pub mod interface;
 pub mod message;
 #[cfg(feature = "remote")]
 pub mod remote;
+pub mod spectral;
 
 pub type Identifier = uuid::Uuid;
+pub type Measurement = f32;
+
+
+
+
+#[cfg(feature = "std")]
+pub type DebugError = String;
+#[cfg(not(feature = "std"))]
+pub type DebugError = heapless::String<128>;
 
 #[cfg(feature = "std")]
 pub type USBError = rusb::Error;
@@ -19,7 +29,7 @@ pub type USBError = ();
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Error {
     Unknown,
-    Debug(String),
+    Debug(DebugError),
     Unsupported,
     USB(USBError),
     Serialization,

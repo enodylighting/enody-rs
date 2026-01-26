@@ -1,11 +1,14 @@
-use serde::{
-	Deserialize,
-	Serialize
+use heapless::{ String, Vec };
+use serde::{ Deserialize, Serialize };
+
+use crate::{
+	Identifier,
+	Measurement,
+	spectral::SpectralSample
 };
 
-use super::Identifier;
-
-pub type Measurement = f32;
+const SPECTRAL_SAMPLE_BATCH_SIZE: usize = 32;
+const LOG_EVENT_BUFFER_SIZE: usize = 128;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Flux {
@@ -217,19 +220,13 @@ pub enum SpectralDataEvent {
 	Info(SpectralDataInfo),
 	SampleCount(u32),
 	Sample(SpectralSample),
-	SampleBatch(Vec<SpectralSample>) // TODO(carter): going to need to use heapless for no_std
+	SampleBatch(Vec<SpectralSample, SPECTRAL_SAMPLE_BATCH_SIZE>)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SpectralDataInfo {
 	identifier: Identifier,
 	domain: (Measurement, Measurement)
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct SpectralSample {
-	wavelength: Measurement,
-	measurement: Measurement
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -258,7 +255,7 @@ pub struct RuntimeInfo {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LogEvent {
     pub level: LogLevel,
-    pub output: String
+    pub output: String<LOG_EVENT_BUFFER_SIZE>
 }
 
 #[repr(u8)]
