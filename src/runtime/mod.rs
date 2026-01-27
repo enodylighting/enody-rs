@@ -19,12 +19,13 @@ pub trait Runtime<InternalCommand = (), InternalEvent = ()>  {
 #[cfg(feature = "remote")]
 pub mod remote {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use async_trait::async_trait;
     use tokio::sync::{Mutex as AsyncMutex, oneshot};
     use crate::{
         Identifier,
         host::remote::RemoteHost,
-        message::{CommandMessage, EventMessage, Message}
+        message::{CommandMessage, Event, EventMessage, LogLevel, Message, RuntimeEvent}
     };
 
     /// Trait for providing message transport to a remote runtime.
@@ -66,6 +67,8 @@ pub mod remote {
         /// Channel for messages that aren't command responses (e.g., unsolicited events)
         message_tx: tokio::sync::mpsc::Sender<Message<(), ()>>,
         message_rx: AsyncMutex<tokio::sync::mpsc::Receiver<Message<(), ()>>>,
+        /// Whether to log incoming Log events using the log crate
+        logging_enabled: AtomicBool,
     }
 
     /// A runtime that communicates with remote devices via a connection.
@@ -93,6 +96,7 @@ pub mod remote {
                 pending_commands: AsyncMutex::new(Vec::new()),
                 message_tx,
                 message_rx: AsyncMutex::new(message_rx),
+                logging_enabled: AtomicBool::new(false),
             });
 
             // Spawn background task to receive and dispatch messages
@@ -141,6 +145,20 @@ pub mod remote {
                             continue; // Don't forward matched responses to message channel
                         }
                     }
+
+                    // Handle Log events if logging is enabled
+                    if let Event::Runtime(RuntimeEvent::Log(ref log_event)) = event.event {
+                        if inner.logging_enabled.load(Ordering::Relaxed) {
+                            match log_event.level {
+                                LogLevel::Error => log::error!("{}", log_event.output),
+                                LogLevel::Warn => log::warn!("{}", log_event.output),
+                                LogLevel::Info => log::info!("{}", log_event.output),
+                                LogLevel::Debug => log::debug!("{}", log_event.output),
+                                LogLevel::Trace => log::trace!("{}", log_event.output),
+                            }
+                            continue; // Don't forward log events to message channel when logging is enabled
+                        }
+                    }
                 }
 
                 // Forward unmatched messages to the channel
@@ -164,6 +182,16 @@ pub mod remote {
         /// Close the connection to the remote runtime.
         pub async fn disconnect(&self) -> Result<(), crate::Error> {
             self.inner.connection.disconnect().await
+        }
+
+        /// Enable logging of remote runtime Log events.
+        ///
+        /// When enabled, incoming `RuntimeEvent::Log` events are automatically
+        /// logged using the `log` crate at the appropriate level (error, warn,
+        /// info, debug, trace). These events are consumed by the logger and
+        /// will not appear in `next_message()`.
+        pub fn enable_logging(&self) {
+            self.inner.logging_enabled.store(true, Ordering::Relaxed);
         }
 
         /// Execute a command and wait for its response event.
