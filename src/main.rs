@@ -42,6 +42,51 @@ enum Commands {
         flux: f32,
     },
 
+    /// Strobe all fixtures between off and a target flux at a given CCT
+    Strobe {
+        /// Correlated color temperature in Kelvin
+        cct: f32,
+
+        /// Target relative flux (0.0 to 1.0, default: 0.5)
+        #[arg(short, long, default_value_t = 0.5)]
+        flux: f32,
+
+        /// Duration in seconds (default: 1.0)
+        #[arg(short, long, default_value_t = 1.0)]
+        duration: f32,
+
+        /// Target framerate in fps (default: 60, max: 240)
+        #[arg(short, long, default_value_t = 60.0)]
+        rate: f32,
+    },
+
+    /// Linear fade between two blackbody CCT/flux settings
+    Fade {
+        /// Starting CCT in Kelvin (default: 3200)
+        #[arg(long, default_value_t = 3200.0)]
+        from_cct: f32,
+
+        /// Ending CCT in Kelvin (default: 1000)
+        #[arg(long, default_value_t = 1000.0)]
+        to_cct: f32,
+
+        /// Starting relative flux (default: 0.5)
+        #[arg(long, default_value_t = 0.5)]
+        from_flux: f32,
+
+        /// Ending relative flux (default: 0.5)
+        #[arg(long, default_value_t = 0.5)]
+        to_flux: f32,
+
+        /// Duration in seconds (default: 1.0)
+        #[arg(short, long, default_value_t = 1.0)]
+        duration: f32,
+
+        /// Target framerate in fps (default: 60, max: 240)
+        #[arg(short, long, default_value_t = 60.0)]
+        rate: f32,
+    },
+
     /// Update selected device to newest firmware
     Update,
 }
@@ -56,6 +101,8 @@ async fn main() -> Result<(), Box<enody::Error>> {
         Commands::Info => info_devices().await?,
         Commands::Monitor => monitor_devices().await?,
         Commands::SetBlackbody { cct, flux } => set_blackbody(cct, flux, cli.verbose).await?,
+        Commands::Strobe { cct, flux, duration, rate } => strobe(cct, flux, duration, rate, cli.verbose).await?,
+        Commands::Fade { from_cct, to_cct, from_flux, to_flux, duration, rate } => fade(from_cct, to_cct, from_flux, to_flux, duration, rate, cli.verbose).await?,
         Commands::Update => update_remote_host().await?
     }
 
@@ -229,6 +276,129 @@ async fn set_blackbody(cct: f32, flux: f32, verbose: bool) -> Result<(), Box<eno
             }
         }
     }
+
+    Ok(())
+}
+
+async fn strobe(cct: f32, flux: f32, duration: f32, rate: f32, verbose: bool) -> Result<(), Box<enody::Error>> {
+    use enody::message::{Configuration, Flux};
+    use std::time::Duration;
+
+    let environment = USBEnvironment::new();
+    let runtimes = environment.runtimes();
+
+    if runtimes.is_empty() {
+        vprintln!(verbose, "No Enody devices found.");
+        return Ok(());
+    }
+
+    let config = Configuration::Blackbody(cct);
+    let flux_on = Flux::Relative(flux);
+    let flux_off = Flux::Relative(0.0);
+    let frame_duration = Duration::from_secs_f32(1.0 / rate.min(240.0));
+    let total_frames = (duration * rate.min(240.0)) as u32;
+
+    // Collect all fixtures across all runtimes
+    let mut fixtures = Vec::new();
+    for runtime in &runtimes {
+        let host = match runtime.host().await {
+            Ok(host) => host,
+            Err(e) => {
+                vprintln!(verbose, "Failed to query host: {:?}", e);
+                continue;
+            }
+        };
+
+        match host.fixtures().await {
+            Ok(f) => fixtures.extend(f),
+            Err(e) => {
+                vprintln!(verbose, "Failed to discover fixtures: {:?}", e);
+            }
+        }
+    }
+
+    if fixtures.is_empty() {
+        vprintln!(verbose, "No fixtures found.");
+        return Ok(());
+    }
+
+    let mut interval = tokio::time::interval(frame_duration);
+    let mut on = true;
+    let mut cycles: u32 = 0;
+    for _ in 0..total_frames {
+        interval.tick().await;
+        let target = if on { &flux_on } else { &flux_off };
+        for fixture in &fixtures {
+            let _ = fixture.display(config.clone(), target.clone()).await;
+        }
+        on = !on;
+        cycles += 1;
+    }
+
+    // Ensure fixtures are left off
+    for fixture in &fixtures {
+        let _ = fixture.display(config.clone(), flux_off.clone()).await;
+    }
+
+    vprintln!(verbose, "{} cycles in {:.2}s", cycles, duration);
+
+    Ok(())
+}
+
+async fn fade(from_cct: f32, to_cct: f32, from_flux: f32, to_flux: f32, duration: f32, rate: f32, verbose: bool) -> Result<(), Box<enody::Error>> {
+    use enody::message::{Configuration, Flux};
+    use std::time::Duration;
+
+    let environment = USBEnvironment::new();
+    let runtimes = environment.runtimes();
+
+    if runtimes.is_empty() {
+        vprintln!(verbose, "No Enody devices found.");
+        return Ok(());
+    }
+
+    let capped_rate = rate.min(240.0);
+    let total_frames = (duration * capped_rate) as u32;
+    let frame_duration = Duration::from_secs_f32(1.0 / capped_rate);
+
+    let mut fixtures = Vec::new();
+    for runtime in &runtimes {
+        let host = match runtime.host().await {
+            Ok(host) => host,
+            Err(e) => {
+                vprintln!(verbose, "Failed to query host: {:?}", e);
+                continue;
+            }
+        };
+
+        match host.fixtures().await {
+            Ok(f) => fixtures.extend(f),
+            Err(e) => {
+                vprintln!(verbose, "Failed to discover fixtures: {:?}", e);
+            }
+        }
+    }
+
+    if fixtures.is_empty() {
+        vprintln!(verbose, "No fixtures found.");
+        return Ok(());
+    }
+
+    let mut interval = tokio::time::interval(frame_duration);
+    for frame in 0..=total_frames {
+        interval.tick().await;
+        let t = if total_frames == 0 { 1.0 } else { frame as f32 / total_frames as f32 };
+        let cct = from_cct + (to_cct - from_cct) * t;
+        let flux = from_flux + (to_flux - from_flux) * t;
+        let config = Configuration::Blackbody(cct);
+        let target_flux = Flux::Relative(flux);
+
+        for fixture in &fixtures {
+            let _ = fixture.display(config.clone(), target_flux.clone()).await;
+        }
+    }
+
+    vprintln!(verbose, "Fade complete: {} frames in {:.2}s", total_frames + 1, duration);
 
     Ok(())
 }
