@@ -1,10 +1,22 @@
 use clap::{Parser, Subcommand};
 use enody::{environment::Environment, runtime::usb::USBEnvironment};
 
+macro_rules! vprintln {
+    ($verbose:expr, $($arg:tt)*) => {
+        if $verbose {
+            println!($($arg)*);
+        }
+    };
+}
+
 #[derive(Parser)]
 #[command(name = "enody")]
 #[command(about = "Enody Host SDK CLI", long_about = None)]
 struct EnodyCLI {
+    /// Enable verbose output
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -20,6 +32,16 @@ enum Commands {
     /// Monitor log output from all attached devices
     Monitor,
 
+    /// Set all fixtures to a blackbody configuration
+    SetBlackbody {
+        /// Correlated color temperature in Kelvin
+        cct: f32,
+
+        /// Target relative flux (0.0 to 1.0, default: 0.5)
+        #[arg(short, long, default_value_t = 0.5)]
+        flux: f32,
+    },
+
     /// Update selected device to newest firmware
     Update,
 }
@@ -33,6 +55,7 @@ async fn main() -> Result<(), Box<enody::Error>> {
         Commands::List => list_devices().await?,
         Commands::Info => info_devices().await?,
         Commands::Monitor => monitor_devices().await?,
+        Commands::SetBlackbody { cct, flux } => set_blackbody(cct, flux, cli.verbose).await?,
         Commands::Update => update_remote_host().await?
     }
 
@@ -161,6 +184,52 @@ async fn monitor_devices() -> Result<(), Box<enody::Error>> {
         .expect("Failed to listen for Ctrl+C");
 
     println!("\nShutting down...");
+    Ok(())
+}
+
+async fn set_blackbody(cct: f32, flux: f32, verbose: bool) -> Result<(), Box<enody::Error>> {
+    use enody::message::{Configuration, Flux};
+
+    let environment = USBEnvironment::new();
+    let runtimes = environment.runtimes();
+
+    if runtimes.is_empty() {
+        vprintln!(verbose, "No Enody devices found.");
+        return Ok(());
+    }
+
+    let config = Configuration::Blackbody(cct);
+    let target_flux = Flux::Relative(flux);
+
+    for runtime in &runtimes {
+        let host = match runtime.host().await {
+            Ok(host) => host,
+            Err(e) => {
+                vprintln!(verbose, "Failed to query host: {:?}", e);
+                continue;
+            }
+        };
+
+        let fixtures = match host.fixtures().await {
+            Ok(fixtures) => fixtures,
+            Err(e) => {
+                vprintln!(verbose, "Failed to discover fixtures: {:?}", e);
+                continue;
+            }
+        };
+
+        for fixture in &fixtures {
+            match fixture.display(config.clone(), target_flux.clone()).await {
+                Ok((result_config, result_flux)) => {
+                    vprintln!(verbose, "Fixture {} set to {:?} at {:?}", fixture.identifier(), result_config, result_flux);
+                }
+                Err(e) => {
+                    vprintln!(verbose, "Failed to set fixture {}: {:?}", fixture.identifier(), e);
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
