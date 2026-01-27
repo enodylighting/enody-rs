@@ -9,6 +9,7 @@ pub mod environment;
 pub mod fixture;
 pub mod host;
 pub mod interface;
+pub mod source;
 pub mod message;
 pub mod runtime;
 pub mod spectral;

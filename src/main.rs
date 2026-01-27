@@ -113,10 +113,26 @@ async fn info_devices() -> Result<(), Box<enody::Error>> {
             println!("────────────────────────────────────────────────────────────────");
             println!("  Identifier: {}", fixture.identifier());
 
-            // Query source count for this fixture
-            match fixture.source_count().await {
-                Ok(count) => println!("  Sources:    {}", count),
-                Err(e) => println!("  Sources:    (failed to query: {:?})", e),
+            // Discover sources for this fixture
+            let sources = match fixture.sources().await {
+                Ok(sources) => sources,
+                Err(e) => {
+                    println!("  Sources:    (failed to discover: {:?})", e);
+                    continue;
+                }
+            };
+            println!("  Sources:    {}", sources.len());
+
+            for (source_idx, source) in sources.iter().enumerate() {
+                println!();
+                println!("  Source {}", source_idx + 1);
+                println!("  ──────────────────────────────────────────────────────────");
+                println!("    Identifier: {}", source.identifier());
+
+                match source.emitter_count().await {
+                    Ok(count) => println!("    Emitters:   {}", count),
+                    Err(e) => println!("    Emitters:   (failed to query: {:?})", e),
+                }
             }
         }
     }

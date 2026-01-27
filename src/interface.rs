@@ -1,20 +1,11 @@
-use alloc::boxed::Box;
 use core::range::RangeInclusive;
 
 use crate::{
 	Error,
 	Identifier,
-	message::{
-		Configuration, Flux
-	},
+	message::Flux,
 	spectral::SpectralData
 };
-
-pub trait Source: Send + Sync {
-    fn identifier(&self) -> Identifier;
-    fn display(&mut self, config: Configuration, target_flux: Flux) -> Result<(Configuration, Flux), Error>;
-    fn emitters(&self) -> &[Box<dyn Emitter>];
-}
 
 pub trait Emitter: Send + Sync {
     fn identifier(&self) -> Identifier;

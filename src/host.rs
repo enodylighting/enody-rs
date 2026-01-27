@@ -35,32 +35,15 @@ pub mod remote {
     /// Since RemoteRuntime implements Clone with a shared internal connection,
     /// multiple RemoteHosts can share the same underlying connection.
     pub struct RemoteHost {
-        id: Identifier,
         info: HostInfo,
         remote: RemoteRuntime,
     }
 
     impl RemoteHost {
-        /// Create a new RemoteHost with the given runtime and host info.
-        pub fn new(id: Identifier, info: HostInfo, remote: RemoteRuntime) -> Self {
-            Self { id, info, remote }
-        }
-
-        /// Get the host identifier.
-        pub fn identifier(&self) -> Identifier {
-            self.id
-        }
-
-        /// Get the host version.
-        pub fn version(&self) -> Version {
-            self.info.version.clone()
-        }
-
         /// Create a RemoteHost by querying the device for its host information.
         pub async fn from_runtime(remote: RemoteRuntime) -> Result<Self, crate::Error> {
             let info = Self::fetch_host_info(&remote).await?;
-            let id = info.identifier;
-            Ok(Self::new(id, info, remote))
+            Ok(Self::new(info, remote))
         }
 
         /// Fetch host information from the remote device.
@@ -76,20 +59,25 @@ pub mod remote {
             }
         }
 
-        /// Get the host info structure.
-        pub fn host_info(&self) -> &HostInfo {
-            &self.info
+        /// Create a new RemoteHost with the given runtime and host info.
+        pub fn new(info: HostInfo, remote: RemoteRuntime) -> Self {
+            Self { info, remote }
         }
 
-        /// Get a clone of the RemoteRuntime for creating child resources.
-        pub fn runtime(&self) -> RemoteRuntime {
-            self.remote.clone()
+        /// Get the host identifier.
+        pub fn identifier(&self) -> Identifier {
+            self.info.identifier
+        }
+
+        /// Get the host version.
+        pub fn version(&self) -> Version {
+            self.info.version.clone()
         }
 
         /// Fetch the number of fixtures from the remote device.
         async fn fixture_count(&self) -> Result<u32, crate::Error> {
             let command = Command::Host(HostCommand::FixtureCount);
-            let command_message = CommandMessage::root(command, None);
+            let command_message = CommandMessage::root(command, Some(self.identifier()));
 
             let event_message = self.remote.execute_command(command_message).await?;
 
@@ -102,7 +90,7 @@ pub mod remote {
         /// Fetch information about a specific fixture by index.
         async fn fixture_info(&self, index: u32) -> Result<FixtureInfo, crate::Error> {
             let command = Command::Host(HostCommand::FixtureInfo(index));
-            let command_message = CommandMessage::root(command, None);
+            let command_message = CommandMessage::root(command, Some(self.identifier()));
 
             let event_message = self.remote.execute_command(command_message).await?;
 
@@ -120,7 +108,6 @@ pub mod remote {
             for i in 0..count {
                 let info = self.fixture_info(i).await?;
                 let fixture = RemoteFixture::new(
-                    info.identifier,
                     info,
                     self.remote.clone(),
                 );
