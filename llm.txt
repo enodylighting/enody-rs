@@ -1,0 +1,184 @@
+# enody — Rust SDK for Enody Spectrally Tunable Lighting
+
+## Purpose
+
+enody (crate name: `enody`) is a public Rust library for communicating with Enody lighting devices over USB. It provides both trait-based abstractions for embedded firmware and concrete remote types for host-side device control. The crate supports `no_std` when default features are disabled.
+
+## Resource Hierarchy
+
+The library models a strict hierarchical device topology. Each level has a trait (for local/embedded implementations) and a `Remote*` struct (for host-side USB communication, gated behind the `remote` feature).
+
+```
+Environment
+  └── RemoteRuntime (shared connection to a device)
+        └── RemoteHost (physical device, queried from runtime)
+              └── RemoteFixture (addressable light output unit)
+                    └── RemoteSource (controllable region within fixture)
+                          └── Emitter (single LED channel)
+```
+
+All entities are identified by UUID (`Identifier = uuid::Uuid`).
+
+### Traits (always available, including no_std)
+
+Each hierarchy level defines a trait in its own module:
+
+- `host::Host` — `identifier()`, `version()`, `fixtures()`
+- `fixture::Fixture` — `identifier()`, `display(config, flux)`, `sources()`
+- `source::Source` — `identifier()`, `display(config, flux)`, `emitters()`
+- `interface::Emitter` — `identifier()`, `flux_range()`, `set_flux()`, `spectral_data()`
+
+### Remote types (requires `remote` feature)
+
+Each module also contains a `remote` submodule with a concrete type for host-side use:
+
+- `host::remote::RemoteHost`
+- `fixture::remote::RemoteFixture`
+- `source::remote::RemoteSource`
+
+Remote types hold a cloned `RemoteRuntime` internally. Since `RemoteRuntime` wraps `Arc<RemoteRuntimeInner>`, cloning is cheap and all clones share the same underlying USB connection. This means remote objects can be freely moved, stored, and used concurrently without lifetime concerns.
+
+**Discovery pattern** — each parent discovers its children by index:
+
+```rust
+// RemoteHost discovers fixtures
+let fixtures: Vec<RemoteFixture> = host.fixtures().await?;
+
+// RemoteFixture discovers sources
+let sources: Vec<RemoteSource> = fixture.sources().await?;
+```
+
+Internally, discovery sends a count command, then iterates with info commands by index, constructing child remote objects with the parent's cloned runtime.
+
+## Module Map
+
+```
+lib.rs              — Feature flags, core type aliases (Identifier, Error)
+message.rs          — Command/Event protocol types, *Info structs, Configuration, Flux
+environment.rs      — Environment trait, DiscoveryEnvironment trait (remote only)
+runtime/
+  mod.rs            — Runtime trait, RemoteRuntime (shared Arc-based connection)
+  usb.rs            — USBEnvironment, USB connection implementation
+  serialization.rs  — STX/ETX frame encoding with DLE escaping
+host.rs             — Host trait, RemoteHost
+fixture.rs          — Fixture trait, RemoteFixture
+source.rs           — Source trait, RemoteSource
+interface.rs        — Emitter trait
+spectral.rs         — SpectralData, SpectralSample
+main.rs             — CLI binary (requires cli + remote features)
+```
+
+## Message Protocol
+
+All communication uses a command/response pattern over USB bulk transfers:
+
+1. Messages are serialized with `postcard` (serde-based, no_std compatible)
+2. Framed with STX (0x02) / ETX (0x03) delimiters and DLE (0x10) byte-stuffing
+3. Each `CommandMessage` has a unique UUID identifier and optional resource target
+4. `RemoteRuntime` matches responses by context identifier using oneshot channels
+
+### Command/Event hierarchy
+
+```rust
+enum Command<InternalCommand = ()> {
+    Internal(InternalCommand),  // Extended by enody-internal
+    Host(HostCommand),
+    Runtime(RuntimeCommand),
+    Environment(EnvironmentCommand),
+    Fixture(FixtureCommand),
+    Source(SourceCommand),
+    Emitter(EmitterCommand),
+}
+```
+
+The generic `InternalCommand`/`InternalEvent` parameters allow `enody-internal` (private crate) to extend the protocol without modifying the public API. Public users always see `()` for these.
+
+### Key message types
+
+- `Configuration` — `Flux`, `Blackbody(cct)`, `Chromatic(x, y)`, `Spectral`, `Manual`
+- `Flux` — `Relative(f32)` (0.0 to 1.0)
+- `HostInfo` — `version: Version`, `identifier: Identifier`
+- `FixtureInfo` — `identifier: Identifier`
+- `SourceInfo` — `identifier: Identifier`
+
+## Connection Architecture
+
+`RemoteRuntime` separates transport from command logic:
+
+- `RemoteRuntimeConnection` trait — abstracts USB/TCP/etc. Just sends and receives `Message` values
+- `RemoteRuntime` — wraps connection in `Arc`, spawns background tokio task for message dispatch
+- Background task matches incoming events to pending command registrations by context UUID
+- Unmatched events (including log events when logging enabled) route to a message channel
+
+## Usage Flow
+
+### Discovery
+
+```rust
+use enody::{environment::Environment, runtime::usb::USBEnvironment};
+
+// USBEnvironment implements Environment; enumerates attached USB devices
+let environment = USBEnvironment::new();
+let runtimes: Vec<RemoteRuntime> = environment.runtimes();
+```
+
+### Traversal
+
+```rust
+for runtime in environment.runtimes() {
+    let host = runtime.host().await?;           // RemoteHost
+    let fixtures = host.fixtures().await?;       // Vec<RemoteFixture>
+    for fixture in &fixtures {
+        let sources = fixture.sources().await?;  // Vec<RemoteSource>
+        for source in &sources {
+            let count = source.emitter_count().await?;
+        }
+    }
+}
+```
+
+### Control
+
+```rust
+use enody::message::{Configuration, Flux};
+
+// Set fixture to 4000K blackbody at 50% brightness
+fixture.display(
+    Configuration::Blackbody(4000.0),
+    Flux::Relative(0.5),
+).await?;
+
+// Source-level control works identically
+source.display(
+    Configuration::Chromatic(Chromaticity { x: 0.3127, y: 0.3290 }),
+    Flux::Relative(1.0),
+).await?;
+```
+
+## Design Principles
+
+**Fixture-centric addressing**: Commands target fixtures and sources by UUID, not by host. The `CommandMessage` carries an optional `resource: Option<Identifier>` field. This enables future mesh routing where commands reach the correct device regardless of network topology.
+
+**Shared connection via Clone**: `RemoteRuntime` implements `Clone` cheaply (Arc). All remote objects (RemoteHost, RemoteFixture, RemoteSource) hold their own clone. No lifetime parameters, no borrow checker friction.
+
+**Trait + Remote pattern**: Each hierarchy level has a trait for embedded/local use and a Remote* struct for host-side USB. The traits are available in no_std; remote types require the `remote` feature.
+
+**Generic internal extension**: The `Message<InternalCommand, InternalEvent>` generic allows `enody-internal` to add proprietary commands (TLC5940 control, calibration, etc.) while the public API stays clean with `()` defaults.
+
+## Feature Flags
+
+- `std` — Standard library support (implied by `remote`)
+- `remote` — USB communication, RemoteRuntime, all Remote* types, Environment implementations
+- `cli` — CLI binary (clap-based)
+
+Default: `remote` + `cli`. Use `default-features = false` for no_std embedded.
+
+## Crate Ecosystem
+
+```
+enody-rs (this crate, public)
+  ↑
+enody-internal (private, extends with internal commands)
+  ↑
+EP01 firmware (no_std, ESP32-C6, uses traits from enody-rs)
+```
