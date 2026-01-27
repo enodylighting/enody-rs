@@ -1,6 +1,5 @@
 use clap::{Parser, Subcommand};
-use enody::remote::RemoteRuntime;
-use log;
+use enody::{environment::Environment, host::Host, runtime::usb::USBEnvironment};
 
 #[derive(Parser)]
 #[command(name = "enody")]
@@ -33,23 +32,30 @@ async fn main() -> Result<(), Box<enody::Error>> {
 }
 
 async fn list_devices() -> Result<(), Box<enody::Error>> {
-    let runtimes = RemoteRuntime::attached();
-    match runtimes {
-        Ok(mut runtimes) => {
-            for runtime in runtimes.iter_mut() {
-                let host = runtime.host();
-                println!("Device {}", host.identifier().await?);
-                println!("\tVersion: {}", host.version().await?);
+    // Create a USB environment - this automatically enumerates attached devices
+    let environment = USBEnvironment::new();
+
+    // Get runtimes and create hosts via RemoteRuntime
+    let runtimes = environment.runtimes();
+    if runtimes.is_empty() {
+        println!("No Enody devices found.");
+    } else {
+        for runtime in runtimes {
+            match runtime.host().await {
+                Ok(host) => {
+                    println!("Device {}", host.identifier());
+                    println!("\tVersion: {}", host.version());
+                }
+                Err(e) => {
+                    println!("Failed to query host: {:?}", e);
+                }
             }
         }
-        Err(e) => {
-            log::error!("Failed to enumerate devices: {:?}", e);
-        }
     }
+
     Ok(())
 }
 
 async fn update_remote_host() -> Result<(), Box<enody::Error>> {
-    
     Ok(())
 }

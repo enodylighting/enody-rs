@@ -30,7 +30,7 @@ pub enum Configuration {
     Manual
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Version {
 	major: u8,
 	minor: u8,

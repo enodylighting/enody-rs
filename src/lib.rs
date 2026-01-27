@@ -4,17 +4,16 @@
 
 extern crate alloc;
 
+#[cfg(feature = "remote")]
+pub mod environment;
+pub mod host;
 pub mod interface;
 pub mod message;
-#[cfg(feature = "remote")]
-pub mod remote;
+pub mod runtime;
 pub mod spectral;
 
 pub type Identifier = uuid::Uuid;
 pub type Measurement = f32;
-
-
-
 
 #[cfg(feature = "std")]
 pub type DebugError = String;
