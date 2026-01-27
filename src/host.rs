@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 
 use crate::{
     Identifier,
-    interface::Fixture,
+    fixture::Fixture,
     message::Version
 };
 
@@ -20,9 +20,10 @@ pub trait Host: Send + Sync {
 pub mod remote {
     use crate::{
         Identifier,
+        fixture::remote::RemoteFixture,
         message::{
-            Command, CommandMessage, Configuration, Event, Flux, HostCommand, HostEvent, HostInfo,
-            FixtureCommand, FixtureEvent, FixtureInfo, Version
+            Command, CommandMessage, Event, FixtureInfo, HostCommand, HostEvent, HostInfo,
+            Version
         },
         runtime::remote::RemoteRuntime
     };
@@ -130,61 +131,4 @@ pub mod remote {
         }
     }
 
-    /// A fixture accessed via remote runtime communication.
-    ///
-    /// RemoteFixture wraps a cloned RemoteRuntime and provides access to
-    /// fixture operations through the command/event protocol.
-    pub struct RemoteFixture {
-        id: Identifier,
-        info: FixtureInfo,
-        remote: RemoteRuntime,
-    }
-
-    impl RemoteFixture {
-        /// Create a new RemoteFixture with the given runtime and fixture info.
-        pub fn new(id: Identifier, info: FixtureInfo, remote: RemoteRuntime) -> Self {
-            Self { id, info, remote }
-        }
-
-        /// Fetch the number of sources in this fixture.
-        pub async fn source_count(&self) -> Result<u32, crate::Error> {
-            let command = Command::Fixture(FixtureCommand::SourceCount);
-            let command_message = CommandMessage::root(command, Some(self.id));
-
-            let event_message = self.remote.execute_command(command_message).await?;
-
-            match event_message.event {
-                Event::Fixture(FixtureEvent::SourceCount(count)) => Ok(count),
-                _ => Err(crate::Error::UnexpectedResponse),
-            }
-        }
-
-        /// Get the fixture identifier.
-        pub fn identifier(&self) -> Identifier {
-            self.id
-        }
-
-        /// Get the fixture info structure.
-        pub fn fixture_info(&self) -> &FixtureInfo {
-            &self.info
-        }
-
-        /// Get a clone of the RemoteRuntime for creating child resources.
-        pub fn runtime(&self) -> RemoteRuntime {
-            self.remote.clone()
-        }
-
-        /// Send a display command to the fixture.
-        pub async fn display(&self, config: Configuration, target_flux: Flux) -> Result<(Configuration, Flux), crate::Error> {
-            let command = Command::Fixture(FixtureCommand::Display(config, target_flux));
-            let command_message = CommandMessage::root(command, Some(self.id));
-
-            let event_message = self.remote.execute_command(command_message).await?;
-
-            match event_message.event {
-                Event::Fixture(FixtureEvent::Display(config, flux)) => Ok((config, flux)),
-                _ => Err(crate::Error::UnexpectedResponse),
-            }
-        }
-    }
 }

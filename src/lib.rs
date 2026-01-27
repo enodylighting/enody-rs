@@ -6,6 +6,7 @@ extern crate alloc;
 
 #[cfg(feature = "remote")]
 pub mod environment;
+pub mod fixture;
 pub mod host;
 pub mod interface;
 pub mod message;
