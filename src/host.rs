@@ -34,6 +34,7 @@ pub mod remote {
     /// to host information and fixtures through the command/event protocol.
     /// Since RemoteRuntime implements Clone with a shared internal connection,
     /// multiple RemoteHosts can share the same underlying connection.
+    #[derive(Debug, Clone)]
     pub struct RemoteHost {
         info: HostInfo,
         remote: RemoteRuntime,

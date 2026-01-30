@@ -1,7 +1,11 @@
 [package]
 name = "enody"
+description = "SDK for Enody Lighting devices"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/enodylighting/enody-rs"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
 
 [features]
 default = ["remote", "cli"]

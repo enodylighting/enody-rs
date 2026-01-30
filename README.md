@@ -2,6 +2,8 @@
 
 A Rust library for interfacing with Enody spectrally tunable lighting devices. Supports both `std` host applications and `no_std` embedded firmware.
 
+This library is very much WIP. I'm uploading to crates now as it is being distributed publicly and I want to reserve the name.
+
 ## Architecture
 
 enody models a hierarchical device topology:

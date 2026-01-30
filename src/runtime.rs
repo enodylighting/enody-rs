@@ -1,7 +1,3 @@
-mod serialization;
-#[cfg(feature = "remote")]
-pub mod usb;
-
 use alloc::boxed::Box;
 
 use crate::{
@@ -18,8 +14,13 @@ pub trait Runtime<InternalCommand = (), InternalEvent = ()>  {
 
 #[cfg(feature = "remote")]
 pub mod remote {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::{
+        fmt::Debug,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering}
+        }
+    };
     use async_trait::async_trait;
     use tokio::sync::{Mutex as AsyncMutex, oneshot};
     use crate::{
@@ -35,7 +36,7 @@ pub mod remote {
     /// The connection is a naive message shuttler with no command/response logic.
     /// Implementations must handle their own internal synchronization.
     #[async_trait]
-    pub trait RemoteRuntimeConnection: Send + Sync {
+    pub trait RemoteRuntimeConnection: Debug + Send + Sync {
         /// Check if the connection is currently active.
         fn is_connected(&self) -> bool;
 
@@ -54,6 +55,7 @@ pub mod remote {
     }
 
     /// Registration for a pending command awaiting its response.
+    #[derive(Debug)]
     struct CommandResponseRegistration {
         context: Identifier,
         response_tx: Option<oneshot::Sender<EventMessage<()>>>,
@@ -61,6 +63,7 @@ pub mod remote {
 
     /// Shared internal state for RemoteRuntime.
     /// This is wrapped in Arc so that all clones share the same state.
+    #[derive(Debug)]
     struct RemoteRuntimeInner {
         connection: Arc<dyn RemoteRuntimeConnection>,
         pending_commands: AsyncMutex<Vec<CommandResponseRegistration>>,
@@ -80,7 +83,7 @@ pub mod remote {
     ///
     /// The command/response matching logic is handled at this layer, not in the
     /// connection. The connection is just a naive message transport.
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     pub struct RemoteRuntime {
         inner: Arc<RemoteRuntimeInner>,
     }

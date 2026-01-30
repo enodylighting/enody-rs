@@ -30,6 +30,7 @@ pub mod remote {
     ///
     /// RemoteFixture wraps a cloned RemoteRuntime and provides access to
     /// fixture operations through the command/event protocol.
+    #[derive(Clone, Debug)]
     pub struct RemoteFixture {
         info: FixtureInfo,
         remote: RemoteRuntime,

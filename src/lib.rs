@@ -12,7 +12,10 @@ pub mod host;
 pub mod source;
 pub mod message;
 pub mod runtime;
+pub mod serialization;
 pub mod spectral;
+#[cfg(feature = "remote")]
+pub mod usb;
 
 pub type Identifier = uuid::Uuid;
 pub type Measurement = f32;

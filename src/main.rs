@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use enody::{environment::Environment, runtime::usb::USBEnvironment};
+use enody::{environment::Environment, usb::USBEnvironment};
 
 macro_rules! vprintln {
     ($verbose:expr, $($arg:tt)*) => {
@@ -36,6 +36,19 @@ enum Commands {
     SetBlackbody {
         /// Correlated color temperature in Kelvin
         cct: f32,
+
+        /// Target relative flux (0.0 to 1.0, default: 0.5)
+        #[arg(short, long, default_value_t = 0.5)]
+        flux: f32,
+    },
+
+    /// Set all fixtures to a chromaticity configuration
+    SetChromaticity {
+        /// CIE 1931 x coordinate
+        x: f32,
+
+        /// CIE 1931 y coordinate
+        y: f32,
 
         /// Target relative flux (0.0 to 1.0, default: 0.5)
         #[arg(short, long, default_value_t = 0.5)]
@@ -101,6 +114,7 @@ async fn main() -> Result<(), Box<enody::Error>> {
         Commands::Info => info_devices().await?,
         Commands::Monitor => monitor_devices().await?,
         Commands::SetBlackbody { cct, flux } => set_blackbody(cct, flux, cli.verbose).await?,
+        Commands::SetChromaticity { x, y, flux } => set_chromaticity(x, y, flux, cli.verbose).await?,
         Commands::Strobe { cct, flux, duration, rate } => strobe(cct, flux, duration, rate, cli.verbose).await?,
         Commands::Fade { from_cct, to_cct, from_flux, to_flux, duration, rate } => fade(from_cct, to_cct, from_flux, to_flux, duration, rate, cli.verbose).await?,
         Commands::Update => update_remote_host().await?
@@ -119,15 +133,12 @@ async fn list_devices() -> Result<(), Box<enody::Error>> {
         println!("No Enody devices found.");
     } else {
         for runtime in runtimes {
-            match runtime.host().await {
-                Ok(host) => {
-                    println!("Device {}", host.identifier());
-                    println!("\tVersion: {}", host.version());
-                }
-                Err(e) => {
-                    println!("Failed to query host: {:?}", e);
-                }
-            }
+            let Ok(host) = runtime.host().await else {
+                println!("Failed to query host: {:?}", runtime.host().await.unwrap_err());
+                continue;
+            };
+            println!("Device {}", host.identifier());
+            println!("\tVersion: {}", host.version());
         }
     }
 
@@ -153,12 +164,9 @@ async fn info_devices() -> Result<(), Box<enody::Error>> {
         println!("══════════════════════════════════════════════════════════════");
 
         // Query host information
-        let host = match runtime.host().await {
-            Ok(host) => host,
-            Err(e) => {
-                println!("  Failed to query host: {:?}", e);
-                continue;
-            }
+        let Ok(host) = runtime.host().await else {
+            println!("  Failed to query host: {:?}", runtime.host().await.unwrap_err());
+            continue;
         };
 
         println!();
@@ -168,12 +176,9 @@ async fn info_devices() -> Result<(), Box<enody::Error>> {
         println!("  Version:    {}", host.version());
 
         // Discover fixtures and display their info
-        let fixtures = match host.fixtures().await {
-            Ok(fixtures) => fixtures,
-            Err(e) => {
-                println!("  Failed to discover fixtures: {:?}", e);
-                continue;
-            }
+        let Ok(fixtures) = host.fixtures().await else {
+            println!("  Failed to discover fixtures: {:?}", host.fixtures().await.unwrap_err());
+            continue;
         };
         println!("  Fixtures:   {}", fixtures.len());
 
@@ -184,12 +189,10 @@ async fn info_devices() -> Result<(), Box<enody::Error>> {
             println!("  Identifier: {}", fixture.identifier());
 
             // Discover sources for this fixture
-            let sources = match fixture.sources().await {
-                Ok(sources) => sources,
-                Err(e) => {
-                    println!("  Sources:    (failed to discover: {:?})", e);
-                    continue;
-                }
+            let sources = fixture.sources().await;
+            let Ok(sources) = sources else {
+                println!("  Sources:    (failed to discover: {:?})", sources.err().unwrap());
+                continue;
             };
             println!("  Sources:    {}", sources.len());
 
@@ -249,31 +252,59 @@ async fn set_blackbody(cct: f32, flux: f32, verbose: bool) -> Result<(), Box<eno
     let target_flux = Flux::Relative(flux);
 
     for runtime in &runtimes {
-        let host = match runtime.host().await {
-            Ok(host) => host,
-            Err(e) => {
-                vprintln!(verbose, "Failed to query host: {:?}", e);
-                continue;
-            }
+        let Ok(host) = runtime.host().await else {
+            vprintln!(verbose, "Failed to query host: {:?}", runtime.host().await.unwrap_err());
+            continue;
         };
 
-        let fixtures = match host.fixtures().await {
-            Ok(fixtures) => fixtures,
-            Err(e) => {
-                vprintln!(verbose, "Failed to discover fixtures: {:?}", e);
-                continue;
-            }
+        let Ok(fixtures) = host.fixtures().await else {
+            vprintln!(verbose, "Failed to discover fixtures: {:?}", host.fixtures().await.unwrap_err());
+            continue;
         };
 
         for fixture in &fixtures {
-            match fixture.display(config.clone(), target_flux.clone()).await {
-                Ok((result_config, result_flux)) => {
-                    vprintln!(verbose, "Fixture {} set to {:?} at {:?}", fixture.identifier(), result_config, result_flux);
-                }
-                Err(e) => {
-                    vprintln!(verbose, "Failed to set fixture {}: {:?}", fixture.identifier(), e);
-                }
-            }
+            let Ok((result_config, result_flux)) = fixture.display(config.clone(), target_flux.clone()).await else {
+                vprintln!(verbose, "Failed to set fixture {}: {:?}", fixture.identifier(), fixture.display(config.clone(), target_flux.clone()).await.unwrap_err());
+                continue;
+            };
+            vprintln!(verbose, "Fixture {} set to {:?} at {:?}", fixture.identifier(), result_config, result_flux);
+        }
+    }
+
+    Ok(())
+}
+
+async fn set_chromaticity(x: f32, y: f32, flux: f32, verbose: bool) -> Result<(), Box<enody::Error>> {
+    use enody::message::{Chromaticity, Configuration, Flux};
+
+    let environment = USBEnvironment::new();
+    let runtimes = environment.runtimes();
+
+    if runtimes.is_empty() {
+        vprintln!(verbose, "No Enody devices found.");
+        return Ok(());
+    }
+
+    let config = Configuration::Chromatic(Chromaticity { x, y });
+    let target_flux = Flux::Relative(flux);
+
+    for runtime in &runtimes {
+        let Ok(host) = runtime.host().await else {
+            vprintln!(verbose, "Failed to query host: {:?}", runtime.host().await.unwrap_err());
+            continue;
+        };
+
+        let Ok(fixtures) = host.fixtures().await else {
+            vprintln!(verbose, "Failed to discover fixtures: {:?}", host.fixtures().await.unwrap_err());
+            continue;
+        };
+
+        for fixture in &fixtures {
+            let Ok((result_config, result_flux)) = fixture.display(config.clone(), target_flux.clone()).await else {
+                vprintln!(verbose, "Failed to set fixture {}: {:?}", fixture.identifier(), fixture.display(config.clone(), target_flux.clone()).await.unwrap_err());
+                continue;
+            };
+            vprintln!(verbose, "Fixture {} set to {:?} at {:?}", fixture.identifier(), result_config, result_flux);
         }
     }
 
@@ -301,20 +332,16 @@ async fn strobe(cct: f32, flux: f32, duration: f32, rate: f32, verbose: bool) ->
     // Collect all fixtures across all runtimes
     let mut fixtures = Vec::new();
     for runtime in &runtimes {
-        let host = match runtime.host().await {
-            Ok(host) => host,
-            Err(e) => {
-                vprintln!(verbose, "Failed to query host: {:?}", e);
-                continue;
-            }
+        let Ok(host) = runtime.host().await else {
+            vprintln!(verbose, "Failed to query host: {:?}", runtime.host().await.unwrap_err());
+            continue;
         };
 
-        match host.fixtures().await {
-            Ok(f) => fixtures.extend(f),
-            Err(e) => {
-                vprintln!(verbose, "Failed to discover fixtures: {:?}", e);
-            }
-        }
+        let Ok(f) = host.fixtures().await else {
+            vprintln!(verbose, "Failed to discover fixtures: {:?}", host.fixtures().await.unwrap_err());
+            continue;
+        };
+        fixtures.extend(f);
     }
 
     if fixtures.is_empty() {
@@ -363,20 +390,16 @@ async fn fade(from_cct: f32, to_cct: f32, from_flux: f32, to_flux: f32, duration
 
     let mut fixtures = Vec::new();
     for runtime in &runtimes {
-        let host = match runtime.host().await {
-            Ok(host) => host,
-            Err(e) => {
-                vprintln!(verbose, "Failed to query host: {:?}", e);
-                continue;
-            }
+        let Ok(host) = runtime.host().await else {
+            vprintln!(verbose, "Failed to query host: {:?}", runtime.host().await.unwrap_err());
+            continue;
         };
 
-        match host.fixtures().await {
-            Ok(f) => fixtures.extend(f),
-            Err(e) => {
-                vprintln!(verbose, "Failed to discover fixtures: {:?}", e);
-            }
-        }
+        let Ok(f) = host.fixtures().await else {
+            vprintln!(verbose, "Failed to discover fixtures: {:?}", host.fixtures().await.unwrap_err());
+            continue;
+        };
+        fixtures.extend(f);
     }
 
     if fixtures.is_empty() {

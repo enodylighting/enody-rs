@@ -20,7 +20,7 @@ use crate::{
     environment::{Environment, DiscoveryEnvironment},
     message::Message,
     runtime::remote::{RemoteRuntime, RemoteRuntimeConnection},
-    runtime::serialization
+    serialization
 };
 
 const USB_BUFFER_SIZE: usize = 128;

@@ -1,0 +1,30 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "cargo",
+            "command": "build",
+            "args": [
+                "--lib",
+                "--no-default-features"
+            ],
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build",
+            "label": "cargo build (lib / no_std)"
+        },
+        {
+            "type": "cargo",
+            "command": "build",
+            "args": [
+                "--lib",
+            ],
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build",
+            "label": "cargo build (lib / std)"
+        }
+    ]
+}
