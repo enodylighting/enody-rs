@@ -3,7 +3,7 @@ use alloc::boxed::Box;
 use crate::{
     Error,
     Identifier,
-    interface::Emitter,
+    emitter::Emitter,
     message::{Configuration, Flux},
 };
 
