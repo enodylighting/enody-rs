@@ -1,10 +1,13 @@
 use std::{
+    collections::HashMap,
+    io::{self, Read, Write},
     sync::Arc,
     time::Duration
 };
 
 use async_trait::async_trait;
 use rusb::UsbContext;
+use serialport::SerialPort;
 use tokio::{
     sync::{
         Mutex as AsyncMutex,
@@ -26,18 +29,21 @@ use crate::{
 const USB_BUFFER_SIZE: usize = 128;
 const MESSAGE_CHANNEL_SIZE: usize = 64;
 const RUSB_LOG_LEVEL: rusb::LogLevel = rusb::LogLevel::None;
+const SERIAL_READ_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct USBIdentifier {
     pub name: &'static str,
     pub vendor_id: u16,
     pub product_id: u16,
+    pub baud_rate: u32,
 }
 
 const EP01: USBIdentifier = USBIdentifier {
     name: "EP01",
     vendor_id: 0x303A,
-    product_id: 0x1001
+    product_id: 0x1001,
+    baud_rate: 115_200,
 };
 
 const ALL_IDENTIFIERS: [USBIdentifier; 1] = [
@@ -54,9 +60,11 @@ fn rusb_log_shim(level: rusb::LogLevel, message: String) {
     }
 }
 
-/// Active connection state containing the USB handle and control channels.
+type SerialPortHandle = Box<dyn SerialPort + Send>;
+
+/// Active connection state containing the serial port handle and control channels.
 struct ActiveConnection {
-    handle: Arc<rusb::DeviceHandle<rusb::Context>>,
+    port: Arc<AsyncMutex<SerialPortHandle>>,
     message_rx_task: JoinHandle<Result<(), crate::Error>>,
     shutdown: broadcast::Sender<()>,
 }
@@ -91,10 +99,6 @@ impl std::fmt::Debug for USBConnection {
 }
 
 impl USBConnection {
-    const USB_INTERFACE: u8 = 1;
-    const WRITE_ENDPOINT: u8 = 0x01;
-    const READ_ENDPOINT: u8 = 0x81;
-
     /// Create a new USBConnection for a device without connecting.
     /// Call `connect()` to establish the connection.
     pub fn new(device: USBDevice) -> Self {
@@ -117,25 +121,20 @@ impl USBConnection {
         Ok(connections)
     }
 
-    /// Initialize the USB device handle: open, detach kernel driver, claim interface.
-    fn initialize_device_handle(&self) -> Result<rusb::DeviceHandle<rusb::Context>, crate::Error> {
-        let device_handle = self.device.device.open()
-            .map_err(|_| crate::Error::Debug("failed to open device handle".to_string()))?;
-
-        // Detach kernel driver on Linux
-        #[cfg(target_os = "linux")]
-        if let Ok(active) = device_handle.kernel_driver_active(Self::USB_INTERFACE) {
-            if active {
-                match device_handle.detach_kernel_driver(Self::USB_INTERFACE) {
-                    Ok(_) => log::info!("Detached kernel driver from interface {}", Self::USB_INTERFACE),
-                    Err(e) => log::warn!("Could not detach kernel driver: {:?}", e),
-                }
-            }
-        }
-
-        // Claim interface for communication
-        device_handle.claim_interface(Self::USB_INTERFACE)
-            .map_err(|_| crate::Error::Debug("failed to claim USB interface".to_string()))?;
+    /// Open and configure the serial port for the USB device.
+    fn open_serial_port(&self) -> Result<SerialPortHandle, crate::Error> {
+        log::trace!(
+            "Opening serial port {} (vid={:04x}, pid={:04x}, serial={:?}, baud={})",
+            self.device.port_name(),
+            self.device.port_info.vid,
+            self.device.port_info.pid,
+            self.device.port_info.serial_number,
+            self.device.identifier.baud_rate,
+        );
+        let port = serialport::new(&self.device.port_name, self.device.identifier.baud_rate)
+            .timeout(SERIAL_READ_TIMEOUT)
+            .open()
+            .map_err(|err| crate::Error::USB(err.into()))?;
 
         // The usb stack on my development machine does a bunch of other shit when attaching
         // reset the ESP32-C6 to undo it all and get into a known state.
@@ -144,31 +143,19 @@ impl USBConnection {
         {
             // Clear Download Flag
             // RTS = 0 DTR = 0
-            let _ = device_handle.write_control(
-                0x21,
-                0x22,
-                0x00,
-                Self::USB_INTERFACE as u16,
-                &[],
-                Duration::from_millis(100),
-            );
+            let _ = port.write_request_to_send(false);
+            let _ = port.write_data_terminal_ready(false);
 
             // Reboot
             // RTS = 1 DTR = 0
-            let _ = device_handle.write_control(
-                0x21,
-                0x22,
-                0x02,
-                Self::USB_INTERFACE as u16,
-                &[],
-                Duration::from_millis(100),
-            );
+            let _ = port.write_request_to_send(true);
+            let _ = port.write_data_terminal_ready(false);
         }
 
-        Ok(device_handle)
+        Ok(port)
     }
 
-    /// Connect to the USB device: initialize device handle, spawn read task.
+    /// Connect to the USB device: open serial port, spawn read task.
     pub async fn connect(&self) -> Result<(), crate::Error> {
         let mut active_guard = self.active.write().await;
 
@@ -177,47 +164,56 @@ impl USBConnection {
             return Ok(());
         }
 
-        let handle = Arc::new(self.initialize_device_handle()?);
+        let port = self.open_serial_port()?;
+        let mut read_port = port
+            .try_clone()
+            .map_err(|err| crate::Error::USB(err.into()))?;
+        let write_port = Arc::new(AsyncMutex::new(port));
         let (shutdown, _) = broadcast::channel(1);
 
-        let task_handle = handle.clone();
         let mut task_shutdown = shutdown.subscribe();
         let (message_tx, message_rx) = mpsc::channel(MESSAGE_CHANNEL_SIZE);
 
         // Spawn background task to read from USB and forward messages
         let message_rx_task = tokio::task::spawn_blocking(move || {
+            if let Err(err) = read_port.set_timeout(SERIAL_READ_TIMEOUT) {
+                return Err(crate::Error::USB(err.into()));
+            }
+
             let mut message_buffer = Vec::<u8>::new();
             let mut escaped = false;
-            let timeout = Duration::from_millis(100);
             loop {
                 let mut read_buffer = [u8::default(); USB_BUFFER_SIZE];
-                let read_result = task_handle.read_bulk(Self::READ_ENDPOINT, &mut read_buffer, timeout)
-                        .map_err(|e| crate::Error::USB(e));
+                match read_port.read(&mut read_buffer) {
+                    Ok(bytes_read) => {
+                        for i in 0..bytes_read {
+                            let byte = read_buffer[i];
 
-                if let Ok(bytes_read) = read_result {
-                    for i in 0..bytes_read {
-                        let byte = read_buffer[i];
-
-                        if message_buffer.is_empty() && byte != serialization::CONTROL_CHAR_STX {
-                            continue;
-                        }
-
-                        message_buffer.push(byte);
-
-                        if byte == serialization::CONTROL_CHAR_ETX && !escaped {
-                            match Message::<(), ()>::try_from(message_buffer.clone()) {
-                                Ok(message) => {
-                                    log::trace!("received message: {:?}", message);
-                                    if let Err(_e) = message_tx.try_send(message) {}
-                                },
-                                Err(e) => {
-                                    log::trace!("failed to deserialize message: {:?}", e);
-                                }
+                            if message_buffer.is_empty() && byte != serialization::CONTROL_CHAR_STX {
+                                continue;
                             }
-                            message_buffer.clear();
-                        }
 
-                        escaped = byte == serialization::CONTROL_CHAR_DLE && !escaped;
+                            message_buffer.push(byte);
+
+                            if byte == serialization::CONTROL_CHAR_ETX && !escaped {
+                                match Message::<(), ()>::try_from(message_buffer.clone()) {
+                                    Ok(message) => {
+                                        log::trace!("received message: {:?}", message);
+                                        if let Err(_e) = message_tx.try_send(message) {}
+                                    },
+                                    Err(e) => {
+                                        log::trace!("failed to deserialize message: {:?}", e);
+                                    }
+                                }
+                                message_buffer.clear();
+                            }
+
+                            escaped = byte == serialization::CONTROL_CHAR_DLE && !escaped;
+                        }
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::TimedOut => {}
+                    Err(err) => {
+                        return Err(crate::Error::USB(err.into()));
                     }
                 }
 
@@ -229,7 +225,7 @@ impl USBConnection {
         });
 
         *active_guard = Some(ActiveConnection {
-            handle,
+            port: write_port,
             message_rx_task,
             shutdown,
         });
@@ -243,7 +239,7 @@ impl USBConnection {
         Ok(())
     }
 
-    /// Disconnect from the USB device: stop read task, release interface.
+    /// Disconnect from the USB device: stop read task, close the serial port.
     pub async fn disconnect(&self) -> Result<(), crate::Error> {
         // Clear the message receiver first
         {
@@ -264,11 +260,6 @@ impl USBConnection {
                 Err(e) => log::warn!("Failed to join USB read task: {:?}", e),
             }
 
-            // Release the USB interface
-            if let Err(e) = active.handle.release_interface(Self::USB_INTERFACE) {
-                log::warn!("Failed to release USB interface: {:?}", e);
-            }
-
             log::trace!("USB connection torn down");
         }
 
@@ -287,13 +278,8 @@ impl USBConnection {
 
     /// Get the device serial number.
     pub fn device_serial(&self) -> Result<String, crate::Error> {
-        let active_guard = self.active.blocking_read();
-        let active = active_guard.as_ref()
-            .ok_or_else(|| crate::Error::Debug("not connected".to_string()))?;
-        let descriptor = active.handle.device().device_descriptor()
-            .map_err(|usb_error| crate::Error::USB(usb_error))?;
-        active.handle.read_serial_number_string_ascii(&descriptor)
-            .map_err(|usb_error| crate::Error::USB(usb_error))
+        self.device.serial_number()
+            .ok_or_else(|| crate::Error::Debug("device serial number not available".to_string()))
     }
 
 }
@@ -320,9 +306,9 @@ impl RemoteRuntimeConnection for USBConnection {
             .ok_or_else(|| crate::Error::Debug("not connected".to_string()))?;
         let payload: Vec<u8> = Vec::<u8>::try_from(message)
             .map_err(|_| crate::Error::Serialization)?;
-        active.handle.write_bulk(Self::WRITE_ENDPOINT, &payload, Duration::from_millis(1000))
-            .map(|_| ())
-            .map_err(|usb_error| crate::Error::USB(usb_error))
+        let mut port_guard = active.port.lock().await;
+        port_guard.write_all(&payload)
+            .map_err(|err| crate::Error::USB(err.into()))
     }
 
     async fn recv_message(&self) -> Result<Message<(), ()>, crate::Error> {
@@ -348,17 +334,19 @@ impl Drop for USBConnection {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct USBDevice {
     identifier: USBIdentifier,
-    device: rusb::Device<rusb::Context>
+    port_name: String,
+    port_info: USBPortInfo,
 }
 
 impl USBDevice {
-    fn new(identifier: USBIdentifier, device: rusb::Device<rusb::Context>) -> Self {
+    fn new(identifier: USBIdentifier, port_name: String, port_info: USBPortInfo) -> Self {
         Self {
             identifier,
-            device
+            port_name,
+            port_info,
         }
     }
 
@@ -366,34 +354,129 @@ impl USBDevice {
         self.identifier
     }
 
+    pub fn port_name(&self) -> &str {
+        &self.port_name
+    }
+
+    pub fn serial_number(&self) -> Option<String> {
+        self.port_info.serial_number.clone()
+    }
+
     /// Enumerates all currently attached USB devices that match identifiers in ALL_IDENTIFIERS.
     /// Returns a vector of USBDevice instances for all matching devices found.
     pub fn attached() -> Result<Vec<Self>, crate::Error> {
-        let context = rusb::Context::new()
-            .map_err(|usb_error| crate::Error::USB(usb_error))?;
+        let ports = serialport::available_ports()
+            .map_err(|err| crate::Error::USB(err.into()))?;
 
-        let devices = context.devices()
-            .map_err(|usb_error| crate::Error::USB(usb_error))?;
+        log::trace!("Found {} serial ports", ports.len());
+        let mut attached_devices = HashMap::<USBDeviceKey, USBDevice>::new();
 
-        let mut attached_devices = Vec::new();
+        for port in ports {
+            let serialport::SerialPortType::UsbPort(usb_info) = port.port_type else {
+                log::trace!("Skipping non-USB serial port {}", port.port_name);
+                continue;
+            };
 
-        for device in devices.iter() {
-            if let Ok(descriptor) = device.device_descriptor() {
-                let vendor_id = descriptor.vendor_id();
-                let product_id = descriptor.product_id();
+            log::trace!(
+                "USB serial port {}: vid={:04x} pid={:04x} serial={:?} manufacturer={:?} product={:?}",
+                port.port_name,
+                usb_info.vid,
+                usb_info.pid,
+                usb_info.serial_number,
+                usb_info.manufacturer,
+                usb_info.product,
+            );
 
-                // Check if this device matches any identifier in ALL_IDENTIFIERS
-                for identifier in ALL_IDENTIFIERS.iter() {
-                    if identifier.vendor_id == vendor_id && identifier.product_id == product_id {
-                        attached_devices.push(USBDevice::new(*identifier, device));
-                        break;
+            for identifier in ALL_IDENTIFIERS.iter() {
+                if identifier.vendor_id == usb_info.vid && identifier.product_id == usb_info.pid {
+                    log::trace!(
+                        "Matched device {} on port {}",
+                        identifier.name,
+                        port.port_name,
+                    );
+                    let port_info = USBPortInfo {
+                        vid: usb_info.vid,
+                        pid: usb_info.pid,
+                        serial_number: usb_info.serial_number.clone(),
+                        manufacturer: usb_info.manufacturer.clone(),
+                        product: usb_info.product.clone(),
+                    };
+
+                    let device = USBDevice::new(
+                        *identifier,
+                        port.port_name,
+                        port_info,
+                    );
+
+                    let key = USBDeviceKey {
+                        vid: usb_info.vid,
+                        pid: usb_info.pid,
+                        serial_number: usb_info.serial_number.clone(),
+                    };
+
+                    match attached_devices.get(&key) {
+                        None => {
+                            attached_devices.insert(key, device);
+                        }
+                        Some(existing) => {
+                            if should_replace_port(existing.port_name(), device.port_name()) {
+                                log::trace!(
+                                    "Replacing device port {} with preferred {}",
+                                    existing.port_name(),
+                                    device.port_name()
+                                );
+                                attached_devices.insert(key, device);
+                            } else {
+                                log::trace!(
+                                    "Skipping duplicate device on {} (keeping {})",
+                                    device.port_name(),
+                                    existing.port_name()
+                                );
+                            }
+                        }
                     }
+                    break;
                 }
             }
         }
 
-        Ok(attached_devices)
+        log::trace!("Matched {} USB devices", attached_devices.len());
+        Ok(attached_devices.into_values().collect())
     }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct USBDeviceKey {
+    vid: u16,
+    pid: u16,
+    serial_number: Option<String>,
+}
+
+fn should_replace_port(existing: &str, candidate: &str) -> bool {
+    let existing_is_callout = is_callout_port(existing);
+    let candidate_is_callout = is_callout_port(candidate);
+    !existing_is_callout && candidate_is_callout
+}
+
+fn is_callout_port(name: &str) -> bool {
+    name.contains("/dev/cu.") || name.starts_with("cu.")
+}
+
+impl PartialEq for USBDevice {
+    fn eq(&self, other: &Self) -> bool {
+        self.port_name == other.port_name
+    }
+}
+
+impl Eq for USBDevice {}
+
+#[derive(Clone, Debug)]
+pub struct USBPortInfo {
+    pub vid: u16,
+    pub pid: u16,
+    pub serial_number: Option<String>,
+    pub manufacturer: Option<String>,
+    pub product: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -405,11 +488,11 @@ pub enum USBDeviceEvent {
 #[derive(Clone, Debug)]
 struct USBHotplugHandler {
     usb_identifier: USBIdentifier,
-    event_tx: mpsc::Sender<USBDeviceEvent>
+    event_tx: mpsc::Sender<()>
 }
 
 impl USBHotplugHandler {
-    fn new(usb_identifier: USBIdentifier, event_tx: mpsc::Sender<USBDeviceEvent>) -> Self {
+    fn new(usb_identifier: USBIdentifier, event_tx: mpsc::Sender<()>) -> Self {
         Self {
             usb_identifier,
             event_tx
@@ -418,27 +501,17 @@ impl USBHotplugHandler {
 }
 
 impl rusb::Hotplug<rusb::Context> for USBHotplugHandler {
-    fn device_arrived(&mut self, arrived_device: rusb::Device<rusb::Context>) {
+    fn device_arrived(&mut self, _arrived_device: rusb::Device<rusb::Context>) {
         log::trace!("{} arrived", self.usb_identifier.name);
-        let device = USBDevice::new(
-            self.usb_identifier.clone(),
-            arrived_device
-        );
-        let event = USBDeviceEvent::Arrived(device);
-        if let Err(e) = self.event_tx.try_send(event) {
-            log::error!("failed to send arrived device over event channel: {:?}", e);
+        if let Err(e) = self.event_tx.try_send(()) {
+            log::error!("failed to signal arrived device over event channel: {:?}", e);
         }
     }
 
-    fn device_left(&mut self, left_device: rusb::Device<rusb::Context>) {
+    fn device_left(&mut self, _left_device: rusb::Device<rusb::Context>) {
         log::trace!("{} left", self.usb_identifier.name);
-        let device = USBDevice::new(
-            self.usb_identifier.clone(),
-            left_device
-        );
-        let event = USBDeviceEvent::Left(device);
-        if let Err(e) = self.event_tx.try_send(event) {
-            log::error!("failed to send left device over event channel: {:?}", e);
+        if let Err(e) = self.event_tx.try_send(()) {
+            log::error!("failed to signal left device over event channel: {:?}", e);
         }
     }
 }
@@ -468,7 +541,7 @@ impl USBDeviceMonitor {
 
     pub fn start(&mut self, event_listener: Option<mpsc::Sender<USBDeviceEvent>>) -> Result<(), crate::Error> {
         // configure the rusb context
-        let mut usb_context = rusb::Context::new().map_err(|usb_error| crate::Error::USB(usb_error))?;
+        let mut usb_context = rusb::Context::new().map_err(|usb_error| crate::Error::USB(usb_error.into()))?;
         usb_context.set_log_level(RUSB_LOG_LEVEL);
         usb_context.set_log_callback(Box::new(rusb_log_shim), rusb::LogCallbackMode::Context);
         self.usb_context = Some(usb_context.clone());
@@ -483,7 +556,7 @@ impl USBDeviceMonitor {
                 .product_id(usb_identifier.product_id)
                 .enumerate(true)
                 .register(usb_context.clone(), Box::new(handler))
-                .map_err(|usb_error| crate::Error::USB(usb_error))?;
+                .map_err(|usb_error| crate::Error::USB(usb_error.into()))?;
             self.hotplug_registrations.push(registration);
         }
 
@@ -493,7 +566,7 @@ impl USBDeviceMonitor {
         let hotplug_monitor_task = tokio::task::spawn_blocking(move || {
             let timeout = Some(Duration::from_secs(1));
             loop {
-                task_usb_context.handle_events(timeout).map_err(|usb_error| crate::Error::USB(usb_error))?;
+                task_usb_context.handle_events(timeout).map_err(|usb_error| crate::Error::USB(usb_error.into()))?;
                 if let Ok(_reason) = task_shutdown.try_recv() {
                     log::trace!("hotplug monitor task shutdown");
                     return Ok(());
@@ -502,31 +575,41 @@ impl USBDeviceMonitor {
         });
         self.hotplug_monitor_task = Some(hotplug_monitor_task);
 
-        // spawn a task to listen for USBDeviceEvents
+        // spawn a task to listen for hotplug signals and refresh attached devices
         let mut task_shutdown = self.task_shutdown.subscribe();
         let task_connected_devices = self.connected_devices.clone();
         let device_event_task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    Some(event) = device_event_rx.recv() => {
-                        // maintain the connected device map
-                        match event.clone() {
-                            USBDeviceEvent::Arrived(device) => {
-                                let mut devices = task_connected_devices.lock().unwrap();
-                                devices.push(device);
-                                log::trace!("device added, count: {}", devices.len());
-                            },
-                            USBDeviceEvent::Left(device) => {
-                                let mut devices = task_connected_devices.lock().unwrap();
-                                devices.retain(|d| d != &device);
-                                log::trace!("device removed, remaining: {}", devices.len());
-                            }
-                        }
-
-                        // notify the listener
+            match USBDeviceMonitor::refresh_connected_devices(&task_connected_devices) {
+                Ok(events) => {
+                    for event in events {
                         if let Some(event_listener) = &event_listener {
                             if let Err(send_error) = event_listener.send(event).await {
                                 log::error!("failed to send USBDeviceEvent to listener: {:?}", send_error);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("failed to refresh USB devices: {:?}", e);
+                }
+            }
+
+            loop {
+                tokio::select! {
+                    Some(_) = device_event_rx.recv() => {
+                        let events = match USBDeviceMonitor::refresh_connected_devices(&task_connected_devices) {
+                            Ok(events) => events,
+                            Err(e) => {
+                                log::warn!("failed to refresh USB devices: {:?}", e);
+                                Vec::new()
+                            }
+                        };
+
+                        for event in events {
+                            if let Some(event_listener) = &event_listener {
+                                if let Err(send_error) = event_listener.send(event).await {
+                                    log::error!("failed to send USBDeviceEvent to listener: {:?}", send_error);
+                                }
                             }
                         }
                     },
@@ -540,6 +623,34 @@ impl USBDeviceMonitor {
         self.device_event_task = Some(device_event_task);
 
         Ok(())
+    }
+
+    fn refresh_connected_devices(
+        connected_devices: &Arc<std::sync::Mutex<Vec<USBDevice>>>
+    ) -> Result<Vec<USBDeviceEvent>, crate::Error> {
+        let next_devices = USBDevice::attached()?;
+
+        let mut devices_guard = connected_devices.lock().unwrap();
+        let current_devices = devices_guard.clone();
+
+        let mut events = Vec::new();
+        for device in next_devices.iter() {
+            if !current_devices.contains(device) {
+                log::trace!("Detected new device on {}", device.port_name());
+                events.push(USBDeviceEvent::Arrived(device.clone()));
+            }
+        }
+
+        for device in current_devices.iter() {
+            if !next_devices.contains(device) {
+                log::trace!("Detected removed device on {}", device.port_name());
+                events.push(USBDeviceEvent::Left(device.clone()));
+            }
+        }
+
+        *devices_guard = next_devices;
+
+        Ok(events)
     }
 
     pub async fn stop(&mut self) -> Result<(), crate::Error> {
@@ -621,6 +732,7 @@ impl USBEnvironment {
         runtimes: &Arc<std::sync::Mutex<Vec<RemoteRuntime>>>,
         connections: &Arc<std::sync::Mutex<Vec<Arc<USBConnection>>>>
     ) {
+        log::trace!("Enumerating attached USB devices");
         let devices = match USBDevice::attached() {
             Ok(devices) => devices,
             Err(e) => {
@@ -633,6 +745,14 @@ impl USBEnvironment {
         let mut connections_guard = connections.lock().unwrap();
 
         for device in devices {
+            if connections_guard.iter().any(|conn| conn.device() == device) {
+                log::trace!(
+                    "Skipping already connected device on {}",
+                    device.port_name()
+                );
+                continue;
+            }
+
             let usb_connection = USBConnection::new(device);
             let result = tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(usb_connection.connect())
@@ -646,7 +766,11 @@ impl USBEnvironment {
                     runtimes_guard.push(runtime);
                 }
                 Err(e) => {
-                    log::warn!("Failed to connect to USB device: {:?}", e);
+                    log::warn!(
+                        "Failed to connect to USB device on {}: {:?}",
+                        usb_connection.device().port_name(),
+                        e
+                    );
                 }
             }
         }
@@ -658,6 +782,12 @@ impl USBEnvironment {
         runtimes: &Arc<std::sync::Mutex<Vec<RemoteRuntime>>>,
         connections: &Arc<std::sync::Mutex<Vec<Arc<USBConnection>>>>
     ) {
+        if connections.lock().unwrap().iter().any(|conn| conn.device() == device) {
+            log::trace!("Device already connected at {}", device.port_name());
+            return;
+        }
+
+        log::trace!("Device arrived on {}", device.port_name());
         let usb_connection = USBConnection::new(device);
         let result = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(usb_connection.connect())
@@ -673,7 +803,11 @@ impl USBEnvironment {
                 runtimes_guard.push(runtime);
             }
             Err(e) => {
-                log::warn!("Failed to connect to arrived USB device: {:?}", e);
+                log::warn!(
+                    "Failed to connect to arrived USB device on {}: {:?}",
+                    usb_connection.device().port_name(),
+                    e
+                );
             }
         }
     }
@@ -684,6 +818,7 @@ impl USBEnvironment {
         runtimes: &Arc<std::sync::Mutex<Vec<RemoteRuntime>>>,
         connections: &Arc<std::sync::Mutex<Vec<Arc<USBConnection>>>>
     ) {
+        log::trace!("Device left on {}", device.port_name());
         let mut runtimes_guard = runtimes.lock().unwrap();
         let mut connections_guard = connections.lock().unwrap();
 

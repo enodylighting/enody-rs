@@ -26,7 +26,33 @@ pub type DebugError = String;
 pub type DebugError = heapless::String<128>;
 
 #[cfg(feature = "std")]
-pub type USBError = rusb::Error;
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum USBError {
+    Rusb(String),
+    SerialPort(String),
+    Io(String),
+}
+
+#[cfg(feature = "std")]
+impl From<rusb::Error> for USBError {
+    fn from(err: rusb::Error) -> Self {
+        USBError::Rusb(format!("{:?}", err))
+    }
+}
+
+#[cfg(all(feature = "std", feature = "remote"))]
+impl From<serialport::Error> for USBError {
+    fn from(err: serialport::Error) -> Self {
+        USBError::SerialPort(format!("{:?}", err))
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<std::io::Error> for USBError {
+    fn from(err: std::io::Error) -> Self {
+        USBError::Io(format!("{:?}", err))
+    }
+}
 #[cfg(not(feature = "std"))]
 pub type USBError = ();
 
