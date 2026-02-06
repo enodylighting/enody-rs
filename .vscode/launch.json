@@ -38,10 +38,10 @@
                     "kind": "bin"
                 }
             },
-            "args": ["list"],
+            "args": ["fade"],
             "cwd": "${workspaceFolder}",
             "env": {
-                "RUST_LOG": "info"
+                "RUST_LOG": "trace"
             }
         },
         {

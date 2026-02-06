@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use enody::{environment::Environment, usb::USBEnvironment};
+use enody::{environment::Environment, usb::UsbEnvironment};
 
 macro_rules! vprintln {
     ($verbose:expr, $($arg:tt)*) => {
@@ -106,7 +106,9 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<enody::Error>> {
-    env_logger::init();
+    env_logger::Builder::from_default_env()
+        .format_timestamp_millis()
+        .init();
 
     let cli = EnodyCLI::parse();
     match cli.command {
@@ -114,10 +116,35 @@ async fn main() -> Result<(), Box<enody::Error>> {
         Commands::Info => info_devices().await?,
         Commands::Monitor => monitor_devices().await?,
         Commands::SetBlackbody { cct, flux } => set_blackbody(cct, flux, cli.verbose).await?,
-        Commands::SetChromaticity { x, y, flux } => set_chromaticity(x, y, flux, cli.verbose).await?,
-        Commands::Strobe { cct, flux, duration, rate } => strobe(cct, flux, duration, rate, cli.verbose).await?,
-        Commands::Fade { from_cct, to_cct, from_flux, to_flux, duration, rate } => fade(from_cct, to_cct, from_flux, to_flux, duration, rate, cli.verbose).await?,
-        Commands::Update => update_remote_host().await?
+        Commands::SetChromaticity { x, y, flux } => {
+            set_chromaticity(x, y, flux, cli.verbose).await?
+        }
+        Commands::Strobe {
+            cct,
+            flux,
+            duration,
+            rate,
+        } => strobe(cct, flux, duration, rate, cli.verbose).await?,
+        Commands::Fade {
+            from_cct,
+            to_cct,
+            from_flux,
+            to_flux,
+            duration,
+            rate,
+        } => {
+            fade(
+                from_cct,
+                to_cct,
+                from_flux,
+                to_flux,
+                duration,
+                rate,
+                cli.verbose,
+            )
+            .await?
+        }
+        Commands::Update => update_remote_host().await?,
     }
 
     Ok(())
@@ -125,7 +152,7 @@ async fn main() -> Result<(), Box<enody::Error>> {
 
 async fn list_devices() -> Result<(), Box<enody::Error>> {
     // Create a USB environment - this automatically enumerates attached devices
-    let environment = USBEnvironment::new();
+    let environment = UsbEnvironment::new();
 
     // Get runtimes and create hosts via RemoteRuntime
     let runtimes = environment.runtimes();
@@ -134,7 +161,7 @@ async fn list_devices() -> Result<(), Box<enody::Error>> {
     } else {
         for runtime in runtimes {
             let Ok(host) = runtime.host().await else {
-                println!("Failed to query host: {:?}", runtime.host().await.unwrap_err());
+                println!("Failed to query host.");
                 continue;
             };
             println!("Device {}", host.identifier());
@@ -146,7 +173,7 @@ async fn list_devices() -> Result<(), Box<enody::Error>> {
 }
 
 async fn info_devices() -> Result<(), Box<enody::Error>> {
-    let environment = USBEnvironment::new();
+    let environment = UsbEnvironment::new();
     let runtimes = environment.runtimes();
 
     if runtimes.is_empty() {
@@ -165,7 +192,7 @@ async fn info_devices() -> Result<(), Box<enody::Error>> {
 
         // Query host information
         let Ok(host) = runtime.host().await else {
-            println!("  Failed to query host: {:?}", runtime.host().await.unwrap_err());
+            println!("  Failed to query host");
             continue;
         };
 
@@ -177,7 +204,7 @@ async fn info_devices() -> Result<(), Box<enody::Error>> {
 
         // Discover fixtures and display their info
         let Ok(fixtures) = host.fixtures().await else {
-            println!("  Failed to discover fixtures: {:?}", host.fixtures().await.unwrap_err());
+            println!("  Failed to discover fixtures");
             continue;
         };
         println!("  Fixtures:   {}", fixtures.len());
@@ -191,7 +218,10 @@ async fn info_devices() -> Result<(), Box<enody::Error>> {
             // Discover sources for this fixture
             let sources = fixture.sources().await;
             let Ok(sources) = sources else {
-                println!("  Sources:    (failed to discover: {:?})", sources.err().unwrap());
+                println!(
+                    "  Sources:    (failed to discover: {:?})",
+                    sources.err().unwrap()
+                );
                 continue;
             };
             println!("  Sources:    {}", sources.len());
@@ -214,7 +244,7 @@ async fn info_devices() -> Result<(), Box<enody::Error>> {
 }
 
 async fn monitor_devices() -> Result<(), Box<enody::Error>> {
-    let environment = USBEnvironment::new();
+    let environment = UsbEnvironment::new();
     let runtimes = environment.runtimes();
 
     if runtimes.is_empty() {
@@ -222,7 +252,10 @@ async fn monitor_devices() -> Result<(), Box<enody::Error>> {
         return Ok(());
     }
 
-    println!("Monitoring {} device(s). Press Ctrl+C to exit.", runtimes.len());
+    println!(
+        "Monitoring {} device(s). Press Ctrl+C to exit.",
+        runtimes.len()
+    );
 
     // Enable logging on all runtimes
     for runtime in &runtimes {
@@ -230,7 +263,8 @@ async fn monitor_devices() -> Result<(), Box<enody::Error>> {
     }
 
     // Wait for Ctrl+C
-    tokio::signal::ctrl_c().await
+    tokio::signal::ctrl_c()
+        .await
         .expect("Failed to listen for Ctrl+C");
 
     println!("\nShutting down...");
@@ -240,7 +274,7 @@ async fn monitor_devices() -> Result<(), Box<enody::Error>> {
 async fn set_blackbody(cct: f32, flux: f32, verbose: bool) -> Result<(), Box<enody::Error>> {
     use enody::message::{Configuration, Flux};
 
-    let environment = USBEnvironment::new();
+    let environment = UsbEnvironment::new();
     let runtimes = environment.runtimes();
 
     if runtimes.is_empty() {
@@ -253,31 +287,50 @@ async fn set_blackbody(cct: f32, flux: f32, verbose: bool) -> Result<(), Box<eno
 
     for runtime in &runtimes {
         let Ok(host) = runtime.host().await else {
-            vprintln!(verbose, "Failed to query host: {:?}", runtime.host().await.unwrap_err());
+            vprintln!(verbose, "Failed to query host");
             continue;
         };
 
         let Ok(fixtures) = host.fixtures().await else {
-            vprintln!(verbose, "Failed to discover fixtures: {:?}", host.fixtures().await.unwrap_err());
+            vprintln!(verbose, "Failed to discover fixtures");
             continue;
         };
 
         for fixture in &fixtures {
-            let Ok((result_config, result_flux)) = fixture.display(config.clone(), target_flux.clone()).await else {
-                vprintln!(verbose, "Failed to set fixture {}: {:?}", fixture.identifier(), fixture.display(config.clone(), target_flux.clone()).await.unwrap_err());
-                continue;
-            };
-            vprintln!(verbose, "Fixture {} set to {:?} at {:?}", fixture.identifier(), result_config, result_flux);
+            match fixture.display(config.clone(), target_flux.clone()).await {
+                Ok((result_config, result_flux)) => {
+                    vprintln!(
+                        verbose,
+                        "Fixture {} set to {:?} at {:?}",
+                        fixture.identifier(),
+                        result_config,
+                        result_flux
+                    );
+                }
+                Err(e) => {
+                    vprintln!(
+                        verbose,
+                        "Failed to set fixture {}: {:?}",
+                        fixture.identifier(),
+                        e
+                    );
+                }
+            }
         }
     }
 
     Ok(())
 }
 
-async fn set_chromaticity(x: f32, y: f32, flux: f32, verbose: bool) -> Result<(), Box<enody::Error>> {
+async fn set_chromaticity(
+    x: f32,
+    y: f32,
+    flux: f32,
+    verbose: bool,
+) -> Result<(), Box<enody::Error>> {
     use enody::message::{Chromaticity, Configuration, Flux};
 
-    let environment = USBEnvironment::new();
+    let environment = UsbEnvironment::new();
     let runtimes = environment.runtimes();
 
     if runtimes.is_empty() {
@@ -290,32 +343,52 @@ async fn set_chromaticity(x: f32, y: f32, flux: f32, verbose: bool) -> Result<()
 
     for runtime in &runtimes {
         let Ok(host) = runtime.host().await else {
-            vprintln!(verbose, "Failed to query host: {:?}", runtime.host().await.unwrap_err());
+            vprintln!(verbose, "Failed to query host");
             continue;
         };
 
         let Ok(fixtures) = host.fixtures().await else {
-            vprintln!(verbose, "Failed to discover fixtures: {:?}", host.fixtures().await.unwrap_err());
+            vprintln!(verbose, "Failed to discover fixtures");
             continue;
         };
 
         for fixture in &fixtures {
-            let Ok((result_config, result_flux)) = fixture.display(config.clone(), target_flux.clone()).await else {
-                vprintln!(verbose, "Failed to set fixture {}: {:?}", fixture.identifier(), fixture.display(config.clone(), target_flux.clone()).await.unwrap_err());
-                continue;
-            };
-            vprintln!(verbose, "Fixture {} set to {:?} at {:?}", fixture.identifier(), result_config, result_flux);
+            match fixture.display(config.clone(), target_flux.clone()).await {
+                Ok((result_config, result_flux)) => {
+                    vprintln!(
+                        verbose,
+                        "Fixture {} set to {:?} at {:?}",
+                        fixture.identifier(),
+                        result_config,
+                        result_flux
+                    );
+                }
+                Err(e) => {
+                    vprintln!(
+                        verbose,
+                        "Failed to set fixture {}: {:?}",
+                        fixture.identifier(),
+                        e
+                    );
+                }
+            }
         }
     }
 
     Ok(())
 }
 
-async fn strobe(cct: f32, flux: f32, duration: f32, rate: f32, verbose: bool) -> Result<(), Box<enody::Error>> {
+async fn strobe(
+    cct: f32,
+    flux: f32,
+    duration: f32,
+    rate: f32,
+    verbose: bool,
+) -> Result<(), Box<enody::Error>> {
     use enody::message::{Configuration, Flux};
     use std::time::Duration;
 
-    let environment = USBEnvironment::new();
+    let environment = UsbEnvironment::new();
     let runtimes = environment.runtimes();
 
     if runtimes.is_empty() {
@@ -331,14 +404,18 @@ async fn strobe(cct: f32, flux: f32, duration: f32, rate: f32, verbose: bool) ->
 
     // Collect all fixtures across all runtimes
     let mut fixtures = Vec::new();
-    for runtime in &runtimes {
+    for (index, runtime) in runtimes.iter().enumerate() {
         let Ok(host) = runtime.host().await else {
-            vprintln!(verbose, "Failed to query host: {:?}", runtime.host().await.unwrap_err());
+            vprintln!(verbose, "Failed to query host on runtime {}", index + 1);
             continue;
         };
 
         let Ok(f) = host.fixtures().await else {
-            vprintln!(verbose, "Failed to discover fixtures: {:?}", host.fixtures().await.unwrap_err());
+            vprintln!(
+                verbose,
+                "Failed to discover fixtures on runtime {}",
+                index + 1
+            );
             continue;
         };
         fixtures.extend(f);
@@ -372,11 +449,19 @@ async fn strobe(cct: f32, flux: f32, duration: f32, rate: f32, verbose: bool) ->
     Ok(())
 }
 
-async fn fade(from_cct: f32, to_cct: f32, from_flux: f32, to_flux: f32, duration: f32, rate: f32, verbose: bool) -> Result<(), Box<enody::Error>> {
+async fn fade(
+    from_cct: f32,
+    to_cct: f32,
+    from_flux: f32,
+    to_flux: f32,
+    duration: f32,
+    rate: f32,
+    verbose: bool,
+) -> Result<(), Box<enody::Error>> {
     use enody::message::{Configuration, Flux};
     use std::time::Duration;
 
-    let environment = USBEnvironment::new();
+    let environment = UsbEnvironment::new();
     let runtimes = environment.runtimes();
 
     if runtimes.is_empty() {
@@ -389,14 +474,18 @@ async fn fade(from_cct: f32, to_cct: f32, from_flux: f32, to_flux: f32, duration
     let frame_duration = Duration::from_secs_f32(1.0 / capped_rate);
 
     let mut fixtures = Vec::new();
-    for runtime in &runtimes {
+    for (index, runtime) in runtimes.iter().enumerate() {
         let Ok(host) = runtime.host().await else {
-            vprintln!(verbose, "Failed to query host: {:?}", runtime.host().await.unwrap_err());
+            vprintln!(verbose, "Failed to query host on runtime {}", index + 1);
             continue;
         };
 
         let Ok(f) = host.fixtures().await else {
-            vprintln!(verbose, "Failed to discover fixtures: {:?}", host.fixtures().await.unwrap_err());
+            vprintln!(
+                verbose,
+                "Failed to discover fixtures on runtime {}",
+                index + 1
+            );
             continue;
         };
         fixtures.extend(f);
@@ -410,7 +499,11 @@ async fn fade(from_cct: f32, to_cct: f32, from_flux: f32, to_flux: f32, duration
     let mut interval = tokio::time::interval(frame_duration);
     for frame in 0..=total_frames {
         interval.tick().await;
-        let t = if total_frames == 0 { 1.0 } else { frame as f32 / total_frames as f32 };
+        let t = if total_frames == 0 {
+            1.0
+        } else {
+            frame as f32 / total_frames as f32
+        };
         let cct = from_cct + (to_cct - from_cct) * t;
         let flux = from_flux + (to_flux - from_flux) * t;
         let config = Configuration::Blackbody(cct);
@@ -421,7 +514,12 @@ async fn fade(from_cct: f32, to_cct: f32, from_flux: f32, to_flux: f32, duration
         }
     }
 
-    vprintln!(verbose, "Fade complete: {} frames in {:.2}s", total_frames + 1, duration);
+    vprintln!(
+        verbose,
+        "Fade complete: {} frames in {:.2}s",
+        total_frames + 1,
+        duration
+    );
 
     Ok(())
 }

@@ -1,9 +1,6 @@
 use async_trait::async_trait;
 
-use crate::{
-    Identifier,
-    runtime::remote::RemoteRuntime
-};
+use crate::{runtime::remote::RemoteRuntime, Identifier};
 
 /// Environemnts can be used for discovering existing resources or creating
 /// user specificed groups of resources for grouped actions.

@@ -1,11 +1,6 @@
 use core::range::RangeInclusive;
 
-use crate::{
-	Error,
-	Identifier,
-	message::Flux,
-	spectral::SpectralData
-};
+use crate::{message::Flux, spectral::SpectralData, Error, Identifier};
 
 pub trait Emitter: Send + Sync {
     fn identifier(&self) -> Identifier;

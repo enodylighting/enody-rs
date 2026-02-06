@@ -2,32 +2,39 @@ use alloc::boxed::Box;
 
 use crate::{
     host::Host,
-    message::{CommandMessage, EventMessage}
+    message::{CommandMessage, EventMessage},
 };
 
-pub trait Runtime<InternalCommand = (), InternalEvent = ()>  {
-    fn execute_command(&mut self, message: CommandMessage<InternalCommand>) -> Result<EventMessage<InternalEvent>, crate::Error>;
-    fn handle_command(&mut self, message: CommandMessage<InternalCommand>) -> Result<(), crate::Error>;
+pub trait Runtime<InternalCommand = (), InternalEvent = ()> {
+    fn execute_command(
+        &mut self,
+        message: CommandMessage<InternalCommand>,
+    ) -> Result<EventMessage<InternalEvent>, crate::Error>;
+    fn handle_command(
+        &mut self,
+        message: CommandMessage<InternalCommand>,
+    ) -> Result<(), crate::Error>;
     fn handle_event(&mut self, message: EventMessage<InternalEvent>) -> Result<(), crate::Error>;
     fn host(&self) -> Box<dyn Host>;
 }
 
 #[cfg(feature = "remote")]
 pub mod remote {
+    use crate::{
+        host::remote::RemoteHost,
+        message::{CommandMessage, Event, EventMessage, LogLevel, Message, RuntimeEvent},
+        Identifier,
+    };
+    use async_trait::async_trait;
     use std::{
         fmt::Debug,
         sync::{
+            atomic::{AtomicBool, Ordering},
             Arc,
-            atomic::{AtomicBool, Ordering}
-        }
+        },
     };
-    use async_trait::async_trait;
-    use tokio::sync::{Mutex as AsyncMutex, oneshot};
-    use crate::{
-        Identifier,
-        host::remote::RemoteHost,
-        message::{CommandMessage, Event, EventMessage, LogLevel, Message, RuntimeEvent}
-    };
+    use tokio::sync::{oneshot, Mutex as AsyncMutex};
+    use tokio::task::JoinHandle;
 
     /// Trait for providing message transport to a remote runtime.
     ///
@@ -36,7 +43,9 @@ pub mod remote {
     /// The connection is a naive message shuttler with no command/response logic.
     /// Implementations must handle their own internal synchronization.
     #[async_trait]
-    pub trait RemoteRuntimeConnection: Debug + Send + Sync {
+    pub trait RemoteRuntimeConnection<InternalCommand = (), InternalEvent = ()>:
+        Debug + Send + Sync
+    {
         /// Check if the connection is currently active.
         fn is_connected(&self) -> bool;
 
@@ -47,11 +56,16 @@ pub mod remote {
         async fn disconnect(&self) -> Result<(), crate::Error>;
 
         /// Send a message to the remote runtime.
-        async fn send_message(&self, message: Message<(), ()>) -> Result<(), crate::Error>;
+        async fn send_message(
+            &self,
+            message: Message<InternalCommand, InternalEvent>,
+        ) -> Result<(), crate::Error>;
 
         /// Receive the next message from the remote runtime.
         /// This should block until a message is available or the connection is closed.
-        async fn recv_message(&self) -> Result<Message<(), ()>, crate::Error>;
+        async fn recv_message(
+            &self,
+        ) -> Result<Message<InternalCommand, InternalEvent>, crate::Error>;
     }
 
     /// Registration for a pending command awaiting its response.
@@ -72,6 +86,7 @@ pub mod remote {
         message_rx: AsyncMutex<tokio::sync::mpsc::Receiver<Message<(), ()>>>,
         /// Whether to log incoming Log events using the log crate
         logging_enabled: AtomicBool,
+        dispatch_task: AsyncMutex<Option<JoinHandle<()>>>,
     }
 
     /// A runtime that communicates with remote devices via a connection.
@@ -90,25 +105,54 @@ pub mod remote {
 
     impl RemoteRuntime {
         /// Create a new RemoteRuntime wrapping the given connection.
-        /// This spawns a background task to receive messages and route responses.
-        pub fn new(connection: Arc<dyn RemoteRuntimeConnection>) -> Self {
+        pub fn new(connection: Box<dyn RemoteRuntimeConnection>) -> Self {
             let (message_tx, message_rx) = tokio::sync::mpsc::channel(64);
 
             let inner = Arc::new(RemoteRuntimeInner {
-                connection: connection.clone(),
+                connection: Arc::from(connection),
                 pending_commands: AsyncMutex::new(Vec::new()),
                 message_tx,
                 message_rx: AsyncMutex::new(message_rx),
                 logging_enabled: AtomicBool::new(false),
-            });
-
-            // Spawn background task to receive and dispatch messages
-            let dispatch_inner = inner.clone();
-            tokio::spawn(async move {
-                Self::message_dispatch_task(dispatch_inner).await;
+                dispatch_task: AsyncMutex::new(None),
             });
 
             Self { inner }
+        }
+
+        async fn ensure_dispatch_task(inner: &Arc<RemoteRuntimeInner>) {
+            let mut task = inner.dispatch_task.lock().await;
+            if task.as_ref().is_some_and(|handle| !handle.is_finished()) {
+                return;
+            }
+
+            if let Some(handle) = task.take() {
+                handle.abort();
+            }
+
+            let dispatch_inner = inner.clone();
+            let handle = tokio::spawn(async move {
+                Self::message_dispatch_task(dispatch_inner).await;
+            });
+            *task = Some(handle);
+        }
+
+        async fn stop_dispatch_task(inner: &Arc<RemoteRuntimeInner>) {
+            let handle = {
+                let mut task = inner.dispatch_task.lock().await;
+                task.take()
+            };
+            if let Some(handle) = handle {
+                handle.abort();
+                let _ = handle.await;
+            }
+        }
+
+        async fn remove_pending_registration(inner: &RemoteRuntimeInner, context: &Identifier) {
+            let mut pending = inner.pending_commands.lock().await;
+            pending.retain(|registration| {
+                registration.context != *context && registration.response_tx.is_some()
+            });
         }
 
         /// Background task that receives messages from the connection and dispatches them.
@@ -116,7 +160,8 @@ pub mod remote {
         /// forwarded to the message channel.
         async fn message_dispatch_task(inner: Arc<RemoteRuntimeInner>) {
             loop {
-                let message = match inner.connection.recv_message().await {
+                let message = inner.connection.recv_message().await;
+                let message = match message {
                     Ok(msg) => msg,
                     Err(e) => {
                         log::trace!("Message dispatch task ending: {:?}", e);
@@ -179,11 +224,14 @@ pub mod remote {
 
         /// Establish a connection to the remote runtime.
         pub async fn connect(&self) -> Result<(), crate::Error> {
-            self.inner.connection.connect().await
+            self.inner.connection.connect().await?;
+            Self::ensure_dispatch_task(&self.inner).await;
+            Ok(())
         }
 
         /// Close the connection to the remote runtime.
         pub async fn disconnect(&self) -> Result<(), crate::Error> {
+            Self::stop_dispatch_task(&self.inner).await;
             self.inner.connection.disconnect().await
         }
 
@@ -201,7 +249,11 @@ pub mod remote {
         ///
         /// This method sends a command and blocks until the corresponding
         /// response event is received, matching by context identifier.
-        pub async fn execute_command(&self, command: CommandMessage<()>) -> Result<EventMessage<()>, crate::Error> {
+        pub async fn execute_command(
+            &self,
+            command: CommandMessage<()>,
+        ) -> Result<EventMessage<()>, crate::Error> {
+            let command_debug = format!("{:?}", command.command);
             let context = command.identifier.clone();
             let (response_tx, response_rx) = oneshot::channel();
 
@@ -215,12 +267,31 @@ pub mod remote {
             }
 
             // Send the command
+            let start = std::time::Instant::now();
             let message = Message::Command(command);
-            self.inner.connection.send_message(message).await?;
+            if let Err(error) = self.inner.connection.send_message(message).await {
+                Self::remove_pending_registration(&self.inner, &context).await;
+                return Err(error);
+            }
 
             // Wait for the response
-            response_rx.await
-                .map_err(|_| crate::Error::Debug("command response channel closed".to_string()))
+            let response = match response_rx.await {
+                Ok(response) => response,
+                Err(_) => {
+                    Self::remove_pending_registration(&self.inner, &context).await;
+                    return Err(crate::Error::Debug(
+                        "command response channel closed".to_string(),
+                    ));
+                }
+            };
+            let elapsed = start.elapsed();
+            log::debug!(
+                "Command {} completed in {} ms (context={})",
+                command_debug,
+                (elapsed.as_micros() as f32 / 1000.0),
+                context
+            );
+            Ok(response)
         }
 
         /// Send a command message (fire-and-forget).
@@ -241,7 +312,7 @@ pub mod remote {
             let mut rx = self.inner.message_rx.lock().await;
             match rx.recv().await {
                 Some(message) => Ok(message),
-                None => Err(crate::Error::Busy)
+                None => Err(crate::Error::Busy),
             }
         }
 
@@ -251,8 +322,8 @@ pub mod remote {
         }
 
         /// Get a reference to the underlying connection.
-        pub fn connection(&self) -> &Arc<dyn RemoteRuntimeConnection> {
-            &self.inner.connection
+        pub fn connection(&self) -> Arc<dyn RemoteRuntimeConnection> {
+            self.inner.connection.clone()
         }
     }
 }
