@@ -1,10 +1,6 @@
 use alloc::boxed::Box;
 
-use crate::{
-    Identifier,
-    fixture::Fixture,
-    message::Version
-};
+use crate::{fixture::Fixture, message::Version, Identifier};
 
 /// Represents a host device that can provide access to fixtures.
 ///
@@ -19,13 +15,12 @@ pub trait Host: Send + Sync {
 #[cfg(feature = "remote")]
 pub mod remote {
     use crate::{
-        Identifier,
         fixture::remote::RemoteFixture,
         message::{
-            Command, CommandMessage, Event, FixtureInfo, HostCommand, HostEvent, HostInfo,
-            Version
+            Command, CommandMessage, Event, FixtureInfo, HostCommand, HostEvent, HostInfo, Version,
         },
-        runtime::remote::RemoteRuntime
+        runtime::remote::RemoteRuntime,
+        Identifier,
     };
 
     /// A host accessed via remote runtime communication.
@@ -108,15 +103,11 @@ pub mod remote {
 
             for i in 0..count {
                 let info = self.fixture_info(i).await?;
-                let fixture = RemoteFixture::new(
-                    info,
-                    self.remote.clone(),
-                );
+                let fixture = RemoteFixture::new(info, self.remote.clone());
                 fixtures.push(fixture);
             }
 
             Ok(fixtures)
         }
     }
-
 }

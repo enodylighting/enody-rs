@@ -1,29 +1,32 @@
 use alloc::boxed::Box;
 
 use crate::{
-    Error,
-    Identifier,
-    source::Source,
     message::{Configuration, Flux},
+    source::Source,
+    Error, Identifier,
 };
 
 /// Represents a fixture containing one or more light sources.
 pub trait Fixture: Send + Sync {
     fn identifier(&self) -> Identifier;
-    fn display(&mut self, config: Configuration, target_flux: Flux) -> Result<(Configuration, Flux), Error>;
+    fn display(
+        &mut self,
+        config: Configuration,
+        target_flux: Flux,
+    ) -> Result<(Configuration, Flux), Error>;
     fn sources(&self) -> &[Box<dyn Source>];
 }
 
 #[cfg(feature = "remote")]
 pub mod remote {
     use crate::{
-        Identifier,
-        source::remote::RemoteSource,
         message::{
-            Command, CommandMessage, Configuration, Event, Flux,
-            FixtureCommand, FixtureEvent, FixtureInfo, SourceInfo,
+            Command, CommandMessage, Configuration, Event, FixtureCommand, FixtureEvent,
+            FixtureInfo, Flux, SourceInfo,
         },
         runtime::remote::RemoteRuntime,
+        source::remote::RemoteSource,
+        Identifier,
     };
 
     /// A fixture accessed via remote runtime communication.
@@ -80,10 +83,7 @@ pub mod remote {
 
             for i in 0..count {
                 let info = self.source_info(i).await?;
-                let source = RemoteSource::new(
-                    info,
-                    self.remote.clone(),
-                );
+                let source = RemoteSource::new(info, self.remote.clone());
                 sources.push(source);
             }
 
@@ -91,7 +91,11 @@ pub mod remote {
         }
 
         /// Send a display command to the fixture.
-        pub async fn display(&self, config: Configuration, target_flux: Flux) -> Result<(Configuration, Flux), crate::Error> {
+        pub async fn display(
+            &self,
+            config: Configuration,
+            target_flux: Flux,
+        ) -> Result<(Configuration, Flux), crate::Error> {
             let command = Command::Fixture(FixtureCommand::Display(config, target_flux));
             let command_message = CommandMessage::root(command, Some(self.identifier()));
 

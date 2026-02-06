@@ -1,5 +1,5 @@
 use heapless::Vec;
-use serde::{ Deserialize, Serialize };
+use serde::{Deserialize, Serialize};
 
 use crate::Measurement;
 
@@ -9,8 +9,8 @@ const DEFAULT_SAMPLE_COUNT: usize = 41; // 380nm-780nm, 10 nm interval
 /// The measurement can represent transmitance, reflectance, and absorbance.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SpectralSample {
-	wavelength: Measurement,
-	measurement: Measurement
+    wavelength: Measurement,
+    measurement: Measurement,
 }
 
 impl SpectralSample {
@@ -24,7 +24,7 @@ impl SpectralSample {
 }
 
 pub struct SpectralData<const SAMPLE_COUNT: usize = DEFAULT_SAMPLE_COUNT> {
-	samples: Vec<SpectralSample, SAMPLE_COUNT>
+    samples: Vec<SpectralSample, SAMPLE_COUNT>,
 }
 
 impl<const SAMPLE_COUNT: usize> SpectralData<SAMPLE_COUNT> {

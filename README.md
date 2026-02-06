@@ -91,3 +91,50 @@ cargo build --no-default-features     # no_std
 cargo run                             # Run CLI (device must be connected)
 cargo test                            # Run tests
 ```
+
+## Linux Setup
+
+On Linux, a udev rule is required to grant non-root access to the USB device.
+
+**1. Create the udev rule:**
+
+```bash
+sudo tee /etc/udev/rules.d/99-enody-esp32.rules <<'EOF'
+SUBSYSTEM=="usb", ATTR{idVendor}=="303a", ATTR{idProduct}=="1001", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+EOF
+```
+
+**2. Add your user to the plugdev group (if not already):**
+
+```bash
+sudo usermod -aG plugdev $USER
+```
+
+**3. Reload udev rules:**
+
+```bash
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+You may need to log out and back in for group changes to take effect.
+
+### Troubleshooting
+
+If `cargo run list` reports `USB(Access)`, verify permissions with:
+
+```bash
+# Check device permissions (should show group "plugdev" with rw access)
+ls -la /dev/bus/usb/$(lsusb -d 303a:1001 | awk '{print $2"/"$4}' | tr -d :)
+
+# Check your groups include plugdev
+groups
+```
+
+Run with `RUST_LOG=debug` for detailed USB diagnostics:
+
+```bash
+RUST_LOG=debug cargo run list
+```
+
+If Ubuntu's `ModemManager` interferes with the device, add
+`ENV{ID_MM_DEVICE_IGNORE}="1"` to the udev rule and reload.

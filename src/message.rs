@@ -1,60 +1,56 @@
-use heapless::{ String, Vec };
-use serde::{ Deserialize, Serialize };
+use heapless::{String, Vec};
+use serde::{Deserialize, Serialize};
 
-use crate::{
-	Identifier,
-	Measurement,
-	spectral::SpectralSample
-};
+use crate::{spectral::SpectralSample, Identifier, Measurement};
 
 const SPECTRAL_SAMPLE_BATCH_SIZE: usize = 32;
-const LOG_EVENT_BUFFER_SIZE: usize = 128;
+const LOG_EVENT_BUFFER_SIZE: usize = 256;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Flux {
-	Relative(Measurement)
+    Relative(Measurement),
 }
 
 #[derive(Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Chromaticity {
     pub x: Measurement,
-    pub y: Measurement
+    pub y: Measurement,
 }
 
 #[derive(Clone, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Configuration {
     Flux,
-	Blackbody(Measurement),
-	Chromatic(Chromaticity),
+    Blackbody(Measurement),
+    Chromatic(Chromaticity),
     Spectral,
-    Manual
+    Manual,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Version {
-	major: u8,
-	minor: u8,
-	patch: u16
+    major: u8,
+    minor: u8,
+    patch: u16,
 }
 
 impl core::fmt::Display for Version {
-	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
-	}
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Message<InternalCommand = (), InternalEvent = ()> {
-	Command(CommandMessage<InternalCommand>),
-	Event(EventMessage<InternalEvent>)
+    Command(CommandMessage<InternalCommand>),
+    Event(EventMessage<InternalEvent>),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CommandMessage<InternalCommand> {
-	pub identifier: Identifier,
-	pub context: Option<Identifier>,
-	pub resource: Option<Identifier>,
-	pub command: Command<InternalCommand>
+    pub identifier: Identifier,
+    pub context: Option<Identifier>,
+    pub resource: Option<Identifier>,
+    pub command: Command<InternalCommand>,
 }
 
 impl<InternalCommand> CommandMessage<InternalCommand> {
@@ -63,7 +59,7 @@ impl<InternalCommand> CommandMessage<InternalCommand> {
             identifier: uuid::Uuid::new_v4(),
             context: None,
             resource,
-            command
+            command,
         }
     }
 
@@ -72,7 +68,7 @@ impl<InternalCommand> CommandMessage<InternalCommand> {
             identifier: uuid::Uuid::new_v4(),
             context: Some(self.identifier.clone()),
             resource,
-            command
+            command,
         }
     }
 
@@ -95,167 +91,167 @@ impl<InternalCommand> CommandMessage<InternalCommand> {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Command<InternalCommand = ()> {
-	Internal(InternalCommand),
-	Host(HostCommand),
-	Runtime(RuntimeCommand),
-	Environment(EnvironmentCommand),
-	Fixture(FixtureCommand),
-	Source(SourceCommand),
-	Emitter(EmitterCommand)
+    Internal(InternalCommand),
+    Host(HostCommand),
+    Runtime(RuntimeCommand),
+    Environment(EnvironmentCommand),
+    Fixture(FixtureCommand),
+    Source(SourceCommand),
+    Emitter(EmitterCommand),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EventMessage<InternalEvent> {
-	pub identifier: Identifier,
-	pub context: Option<Identifier>,
-	pub resource: Option<Identifier>,
-	pub event: Event<InternalEvent>
+    pub identifier: Identifier,
+    pub context: Option<Identifier>,
+    pub resource: Option<Identifier>,
+    pub event: Event<InternalEvent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Event<InternalEvent = ()> {
-	Error(crate::Error),
-	Internal(InternalEvent),
-	Host(HostEvent),
-	Runtime(RuntimeEvent),
-	Environment(EnvironmentEvent),
-	Fixture(FixtureEvent),
-	Source(SourceEvent),
-	Emitter(EmitterEvent)
+    Error(crate::Error),
+    Internal(InternalEvent),
+    Host(HostEvent),
+    Runtime(RuntimeEvent),
+    Environment(EnvironmentEvent),
+    Fixture(FixtureEvent),
+    Source(SourceEvent),
+    Emitter(EmitterEvent),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum HostCommand {
-	Info,
-	FixtureCount,
-	FixtureInfo(u32)
+    Info,
+    FixtureCount,
+    FixtureInfo(u32),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum HostEvent {
-	Info(HostInfo),
-	FixtureCount(u32),
-	FixtureInfo(FixtureInfo)
+    Info(HostInfo),
+    FixtureCount(u32),
+    FixtureInfo(FixtureInfo),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HostInfo {
-	pub version: Version,
-	pub identifier: Identifier
+    pub version: Version,
+    pub identifier: Identifier,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum FixtureCommand {
-	Info,
-	Display(Configuration, Flux),
-	SourceCount,
-	SourceInfo(u32)
+    Info,
+    Display(Configuration, Flux),
+    SourceCount,
+    SourceInfo(u32),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum FixtureEvent {
-	Info(FixtureInfo),
-	Display(Configuration, Flux),
-	SourceCount(u32),
-	SourceInfo(SourceInfo)
+    Info(FixtureInfo),
+    Display(Configuration, Flux),
+    SourceCount(u32),
+    SourceInfo(SourceInfo),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FixtureInfo {
-	pub identifier: Identifier
+    pub identifier: Identifier,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum SourceCommand {
     Info,
-	Display(Configuration, Flux),
-	EmitterCount,
-    EmitterInfo(u32)
+    Display(Configuration, Flux),
+    EmitterCount,
+    EmitterInfo(u32),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum SourceEvent {
-	Info(SourceInfo),
-	Display(Configuration, Flux),
-	EmitterCount(u32),
-	EmitterInfo(EmitterInfo)
+    Info(SourceInfo),
+    Display(Configuration, Flux),
+    EmitterCount(u32),
+    EmitterInfo(EmitterInfo),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SourceInfo {
-	pub identifier: Identifier
+    pub identifier: Identifier,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EmitterCommand {
-	Info,
-	FluxRange,
-	FluxSet(Flux),
-	SpectralData(Flux)
+    Info,
+    FluxRange,
+    FluxSet(Flux),
+    SpectralData(Flux),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EmitterEvent {
-	Info(EmitterInfo),
-	FluxRange(Flux, Flux),
-	FluxSet(Flux),
-	SpectralData(SpectralDataInfo, Flux)
+    Info(EmitterInfo),
+    FluxRange(Flux, Flux),
+    FluxSet(Flux),
+    SpectralData(SpectralDataInfo, Flux),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EmitterInfo {
-	identifier: Identifier
+    identifier: Identifier,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum SpectralDataCommand {
-	Info,
-	SampleCount,
-	Sample(u32),
-	SampleBatch(u32, u32)
+    Info,
+    SampleCount,
+    Sample(u32),
+    SampleBatch(u32, u32),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum SpectralDataEvent {
-	Info(SpectralDataInfo),
-	SampleCount(u32),
-	Sample(SpectralSample),
-	SampleBatch(Vec<SpectralSample, SPECTRAL_SAMPLE_BATCH_SIZE>)
+    Info(SpectralDataInfo),
+    SampleCount(u32),
+    Sample(SpectralSample),
+    SampleBatch(Vec<SpectralSample, SPECTRAL_SAMPLE_BATCH_SIZE>),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SpectralDataInfo {
-	identifier: Identifier,
-	domain: (Measurement, Measurement)
+    identifier: Identifier,
+    domain: (Measurement, Measurement),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum RuntimeCommand {
-	Info,
-	Host,
-	EnvironmentCount,
-	EnvironmentInfo(u32)
+    Info,
+    Host,
+    EnvironmentCount,
+    EnvironmentInfo(u32),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum RuntimeEvent {
-	Info(RuntimeInfo),
-	Log(LogEvent),
-	Host(HostInfo),
-	EnvironmentCount(u32),
-	EnvironmentInfo(EnvironmentInfo)
+    Info(RuntimeInfo),
+    Log(LogEvent),
+    Host(HostInfo),
+    EnvironmentCount(u32),
+    EnvironmentInfo(EnvironmentInfo),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RuntimeInfo {
-	pub version: Version,
-	pub identifier: Identifier
+    pub version: Version,
+    pub identifier: Identifier,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LogEvent {
     pub level: LogLevel,
-    pub output: String<LOG_EVENT_BUFFER_SIZE>
+    pub output: String<LOG_EVENT_BUFFER_SIZE>,
 }
 
 #[repr(u8)]
@@ -265,30 +261,30 @@ pub enum LogLevel {
     Warn,
     Info,
     Debug,
-    Trace
+    Trace,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EnvironmentCommand {
-	Info,
-	Display(Configuration, Flux),
-	RuntimeCount,
-	RuntimeInfo(u32),
-	FixtureCount,
-	FixtureInfo(u32)
+    Info,
+    Display(Configuration, Flux),
+    RuntimeCount,
+    RuntimeInfo(u32),
+    FixtureCount,
+    FixtureInfo(u32),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EnvironmentEvent {
     Info(EnvironmentInfo),
-	Display(Configuration, Flux),
-	RuntimeCount(u32),
-	RuntimeInfo(RuntimeInfo),
-	FixtureCount(u32),
-	FixtureInfo(FixtureInfo, u32)
+    Display(Configuration, Flux),
+    RuntimeCount(u32),
+    RuntimeInfo(RuntimeInfo),
+    FixtureCount(u32),
+    FixtureInfo(FixtureInfo, u32),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EnvironmentInfo {
-	pub identifier: Identifier
+    pub identifier: Identifier,
 }
