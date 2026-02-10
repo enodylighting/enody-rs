@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fmt::Debug,
     io::{ErrorKind, Read as _, Write as _},
     sync::mpsc as std_mpsc,
@@ -18,6 +19,7 @@ use crate::{
     message::Message,
     runtime::remote::RemoteRuntimeConnection,
     usb::{UsbBackend, UsbDevice, UsbDeviceEvent, UsbIdentifier},
+    Identifier,
 };
 use crate::{
     serialization,
@@ -30,6 +32,8 @@ impl From<serialport::Error> for crate::Error {
         crate::Error::USB(info.to_string())
     }
 }
+
+const HOTPLUG_TASK_TIMEOUT: Duration = Duration::from_millis(1_000);
 
 #[derive(Debug)]
 struct SerialPortConnection {
@@ -200,19 +204,21 @@ impl SerialPortConnection {
 
 #[derive(Debug)]
 pub(crate) struct SerialPortDevice<InternalCommand = (), InternalEvent = ()> {
+    connection: RwLock<Option<SerialPortConnection>>,
+    identifier: Identifier,
+    message_rx: AsyncMutex<Option<mpsc::Receiver<Message<InternalCommand, InternalEvent>>>>,
     port_name: String,
     serial_number: Option<String>,
-    connection: RwLock<Option<SerialPortConnection>>,
-    message_rx: AsyncMutex<Option<mpsc::Receiver<Message<InternalCommand, InternalEvent>>>>,
 }
 
 impl<InternalCommand, InternalEvent> SerialPortDevice<InternalCommand, InternalEvent> {
     pub(crate) fn new(port_name: String, serial_number: Option<String>) -> Self {
         Self {
-            port_name,
-            serial_number,
             connection: RwLock::new(None),
             message_rx: AsyncMutex::new(None),
+            identifier: Identifier::new_v4(),
+            port_name,
+            serial_number,
         }
     }
 }
@@ -224,6 +230,10 @@ where
     InternalCommand: Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
     InternalEvent: Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
 {
+    fn identifier(&self) -> Identifier {
+        self.identifier
+    }
+
     fn is_connected(&self) -> bool {
         self.connection
             .try_read()
@@ -302,10 +312,22 @@ impl<InternalCommand, InternalEvent> UsbDevice<InternalCommand, InternalEvent>
     fn serial_number(&self) -> Option<String> {
         self.serial_number.clone()
     }
+
+    fn connection_key(&self) -> String {
+        format!(
+            "serialport:{}:{}",
+            self.port_name,
+            self.serial_number.clone().unwrap_or_default()
+        )
+    }
 }
 
-#[derive(Default, Debug)]
-pub(crate) struct SerialPortBackend {}
+#[derive(Debug)]
+pub(crate) struct SerialPortBackend {
+    event_tx: mpsc::Sender<UsbDeviceEvent>,
+    poll_task: Option<JoinHandle<Result<(), crate::Error>>>,
+    task_shutdown: broadcast::Sender<()>,
+}
 
 impl SerialPortBackend {
     pub(crate) fn attached_ports() -> Result<Vec<(String, serialport::UsbPortInfo)>, crate::Error> {
@@ -317,8 +339,12 @@ impl SerialPortBackend {
                 continue;
             };
 
+            let product = info.product.as_deref().unwrap_or("");
+
             if ALL_IDENTIFIERS.iter().any(|identifier| {
-                identifier.vendor_id == info.vid && identifier.product_id == info.pid
+                identifier.vendor_id == info.vid
+                    && identifier.product_id == info.pid
+                    && (cfg!(not(target_os = "windows")) || product.contains("(Interface 0)"))
             }) {
                 matching_ports.push((port.port_name, info));
             }
@@ -326,10 +352,35 @@ impl SerialPortBackend {
 
         Ok(matching_ports)
     }
+
+    fn port_map(
+        ports: Vec<(String, serialport::UsbPortInfo)>,
+    ) -> HashMap<String, (String, Option<String>)> {
+        let mut map = HashMap::new();
+        for (port_name, port_info) in ports {
+            let serial_number = port_info.serial_number;
+            let key = format!(
+                "serialport:{}:{}",
+                port_name,
+                serial_number.clone().unwrap_or_default()
+            );
+            map.insert(key, (port_name, serial_number));
+        }
+        map
+    }
 }
 
-#[async_trait]
 impl UsbBackend for SerialPortBackend {
+    fn init(event_tx: mpsc::Sender<UsbDeviceEvent>) -> Result<Self, crate::Error> {
+        let (task_shutdown, _) = broadcast::channel(1);
+        let instance = Self {
+            event_tx,
+            poll_task: None,
+            task_shutdown,
+        };
+        Ok(instance)
+    }
+
     fn attached(&self) -> Result<Vec<Box<dyn UsbDevice>>, crate::Error> {
         let ports = Self::attached_ports()?;
         let mut devices: Vec<Box<dyn UsbDevice>> = Vec::new();
@@ -343,7 +394,89 @@ impl UsbBackend for SerialPortBackend {
         Ok(devices)
     }
 
-    async fn next_device_event(&self) -> UsbDeviceEvent {
-        std::future::pending().await
+    fn start_discovery(&mut self) -> Result<(), crate::Error> {
+        if self.poll_task.is_some() {
+            return Ok(());
+        }
+
+        let initial_ports = Self::attached_ports()?;
+        let mut known_ports = Self::port_map(initial_ports);
+
+        let event_tx = self.event_tx.clone();
+        let mut task_shutdown_rx = self.task_shutdown.subscribe();
+
+        let poll_task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let current_ports = match SerialPortBackend::attached_ports() {
+                            Ok(ports) => ports,
+                            Err(e) => {
+                                log::warn!("Failed to enumerate serial devices in discovery loop: {:?}", e);
+                                continue;
+                            }
+                        };
+                        let current_map = SerialPortBackend::port_map(current_ports);
+
+                        for (key, (port_name, serial_number)) in current_map.iter() {
+                            if known_ports.contains_key(key) {
+                                continue;
+                            }
+
+                            let event = UsbDeviceEvent::Connected(Box::new(SerialPortDevice::new(port_name.clone(), serial_number.clone())));
+                            if let Err(e) = event_tx.try_send(event) {
+                                log::warn!("Failed to enqueue serial arrived event: {:?}", e);
+                            }
+                        }
+
+                        for (key, (port_name, serial_number)) in known_ports.iter() {
+                            if current_map.contains_key(key) {
+                                continue;
+                            }
+
+                            let event = UsbDeviceEvent::Disconnected(Box::new(SerialPortDevice::new(port_name.clone(), serial_number.clone())));
+                            if let Err(e) = event_tx.try_send(event) {
+                                log::warn!("Failed to enqueue serial departed event: {:?}", e);
+                            }
+                        }
+
+                        known_ports = current_map;
+                    }
+                    _ = task_shutdown_rx.recv() => {
+                        log::trace!("serialport discovery polling task shutdown");
+                        return Ok(());
+                    }
+                }
+            }
+        });
+        self.poll_task = Some(poll_task);
+
+        Ok(())
+    }
+
+    fn stop_discovery(&mut self) -> Result<(), crate::Error> {
+        if self.poll_task.is_none() {
+            return Ok(());
+        }
+
+        if let Some(task) = self.poll_task.take() {
+            let _ = self.task_shutdown.send(());
+            let deadline = std::time::Instant::now() + HOTPLUG_TASK_TIMEOUT;
+            while !task.is_finished() {
+                if std::time::Instant::now() >= deadline {
+                    task.abort();
+                    return Err(crate::Error::Debug(
+                        "serial discovery polling task did not stop within timeout".to_string(),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        Ok(())
     }
 }

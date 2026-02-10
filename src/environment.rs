@@ -14,6 +14,12 @@ pub trait Environment {
     fn runtimes(&self) -> Vec<RemoteRuntime>;
 }
 
+#[derive(Debug)]
+pub enum EnvironmentRuntimeEvent {
+    Arrived(RemoteRuntime),
+    Left(RemoteRuntime),
+}
+
 /// Extension trait for environments that support device discovery.
 ///
 /// This trait provides methods for scanning, starting continuous discovery,
@@ -25,4 +31,6 @@ pub trait DiscoveryEnvironment: Environment {
 
     /// Stop continuous discovery
     async fn stop_discovery(&mut self) -> Result<(), crate::Error>;
+
+    async fn next_runtime_event(&self) -> Result<EnvironmentRuntimeEvent, crate::Error>;
 }

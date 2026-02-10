@@ -1,9 +1,13 @@
-use std::{fmt::Debug, sync::Arc, time::Duration};
+use std::{
+    fmt::Debug,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use async_trait::async_trait;
-use rusb::{Context, Device, DeviceHandle, UsbContext};
+use rusb::{Context, Device, DeviceDescriptor, DeviceHandle, UsbContext};
 use tokio::{
-    sync::{broadcast, mpsc, Mutex as AsyncMutex, RwLock},
+    sync::{broadcast, mpsc, RwLock},
     task::JoinHandle,
 };
 
@@ -15,6 +19,7 @@ use crate::{
         UsbBackend, UsbDevice, UsbDeviceEvent, UsbIdentifier, ALL_IDENTIFIERS, EP01,
         MESSAGE_CHANNEL_SIZE, USB_BUFFER_SIZE,
     },
+    Identifier,
 };
 
 pub(crate) const RUSB_LOG_LEVEL: rusb::LogLevel = rusb::LogLevel::None;
@@ -22,6 +27,8 @@ pub(crate) const RUSB_LOG_LEVEL: rusb::LogLevel = rusb::LogLevel::None;
 // currently only for EP01, will need to revisit when 2nd device is added.
 const WRITE_ENDPOINT: u8 = 0x01;
 const READ_ENDPOINT: u8 = 0x81;
+
+const HOTPLUG_TASK_TIMEOUT: Duration = Duration::from_millis(1_000);
 
 impl From<rusb::Error> for crate::Error {
     fn from(e: rusb::Error) -> Self {
@@ -235,17 +242,20 @@ impl RusbDeviceConnection {
 
 #[derive(Debug)]
 struct RusbDevice<InternalCommand = (), InternalEvent = ()> {
-    device: Device<Context>,
     connection: RwLock<Option<RusbDeviceConnection>>,
-    message_rx: AsyncMutex<Option<mpsc::Receiver<Message<InternalCommand, InternalEvent>>>>,
+    device: Device<Context>,
+    identifier: Identifier,
+    message_rx: Mutex<Option<mpsc::Receiver<Message<InternalCommand, InternalEvent>>>>,
 }
 
 impl<InternalCommand, InternalEvent> RusbDevice<InternalCommand, InternalEvent> {
     fn new(device: Device<Context>) -> Self {
+        let identifier = Identifier::new_v4();
         Self {
-            device,
             connection: RwLock::new(None),
-            message_rx: AsyncMutex::new(None),
+            device,
+            identifier,
+            message_rx: Mutex::new(None),
         }
     }
 }
@@ -257,6 +267,10 @@ where
     InternalCommand: Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
     InternalEvent: Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
 {
+    fn identifier(&self) -> Identifier {
+        self.identifier
+    }
+
     fn is_connected(&self) -> bool {
         self.connection
             .try_read()
@@ -279,7 +293,7 @@ where
             message_rx
         };
 
-        let mut rx = self.message_rx.lock().await;
+        let mut rx = self.message_rx.lock().unwrap();
         *rx = Some(message_rx);
         Ok(())
     }
@@ -297,7 +311,7 @@ where
         };
         connection.close().await?;
 
-        let mut rx = self.message_rx.lock().await;
+        let mut rx = self.message_rx.lock().unwrap();
         *rx = None;
         Ok(())
     }
@@ -321,13 +335,22 @@ where
     }
 
     async fn recv_message(&self) -> Result<Message<InternalCommand, InternalEvent>, crate::Error> {
-        let mut rx = self.message_rx.lock().await;
-        let Some(rx) = rx.as_mut() else {
+        let rx = {
+            let mut rx_guard = self.message_rx.lock().unwrap();
+            rx_guard.take()
+        };
+        let Some(mut rx) = rx else {
             return Err(crate::Error::USB("No active connection".to_string()));
         };
-        rx.recv()
+        let received = rx
+            .recv()
             .await
-            .ok_or(crate::Error::USB("failed to recv message".to_string()))
+            .ok_or(crate::Error::USB("failed to recv message".to_string()));
+        {
+            let mut rx_guard = self.message_rx.lock().unwrap();
+            *rx_guard = Some(rx);
+        }
+        received
     }
 }
 
@@ -339,37 +362,65 @@ impl<InternalCommand, InternalEvent> UsbDevice<InternalCommand, InternalEvent> f
     fn serial_number(&self) -> Option<String> {
         self.connection.try_read().ok()?.as_ref()?.serial_number()
     }
+
+    fn connection_key(&self) -> String {
+        let (vendor_id, product_id) = self
+            .device
+            .device_descriptor()
+            .map(|descriptor| (descriptor.vendor_id(), descriptor.product_id()))
+            .unwrap_or((0, 0));
+
+        format!(
+            "rusb:{}:{}:{}:{}",
+            vendor_id,
+            product_id,
+            self.device.bus_number(),
+            self.device.address()
+        )
+    }
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct RusbBackend {}
+#[derive(Debug)]
+pub(crate) struct RusbBackend {
+    context: Context,
+    event_tx: mpsc::Sender<UsbDeviceEvent>,
+    hotplug_monitor_task: Option<JoinHandle<Result<(), crate::Error>>>,
+    hotplug_registrations: Vec<rusb::Registration<Context>>,
+    task_shutdown: broadcast::Sender<()>,
+}
 
-#[async_trait]
 impl UsbBackend for RusbBackend {
-    fn attached(&self) -> Result<Vec<Box<dyn UsbDevice>>, crate::Error> {
+    fn init(event_tx: mpsc::Sender<UsbDeviceEvent>) -> Result<Self, crate::Error> {
         let mut context = Context::new()?;
         context.set_log_level(RUSB_LOG_LEVEL);
         context.set_log_callback(Box::new(rusb_log_shim), rusb::LogCallbackMode::Context);
+        let (task_shutdown, _) = broadcast::channel(1);
+        let instance = Self {
+            context,
+            event_tx,
+            hotplug_monitor_task: None,
+            hotplug_registrations: Vec::new(),
+            task_shutdown,
+        };
+        Ok(instance)
+    }
 
-        let devices = context.devices()?;
-
+    fn attached(&self) -> Result<Vec<Box<dyn UsbDevice>>, crate::Error> {
+        let devices = self.context.devices()?;
         log::debug!("Enumerating USB devices ({} total on bus)", devices.len());
 
         let mut attached_devices: Vec<Box<dyn UsbDevice>> = Vec::new();
-
         for device in devices.iter() {
             if let Ok(descriptor) = device.device_descriptor() {
-                let vendor_id = descriptor.vendor_id();
-                let product_id = descriptor.product_id();
-
+                let descriptor_identifier = UsbIdentifier::from(descriptor);
                 // Check if this device matches any identifier in ALL_IDENTIFIERS
                 for identifier in ALL_IDENTIFIERS.iter() {
-                    if identifier.vendor_id == vendor_id && identifier.product_id == product_id {
+                    if &descriptor_identifier == identifier {
                         log::debug!(
                             "Found matching device: {} (VID={:#06x} PID={:#06x}) at bus={} addr={}",
                             identifier.name,
-                            vendor_id,
-                            product_id,
+                            identifier.vendor_id,
+                            identifier.product_id,
                             device.bus_number(),
                             device.address()
                         );
@@ -385,7 +436,101 @@ impl UsbBackend for RusbBackend {
         Ok(attached_devices)
     }
 
-    async fn next_device_event(&self) -> UsbDeviceEvent {
-        std::future::pending().await
+    fn start_discovery(&mut self) -> Result<(), crate::Error> {
+        if self.hotplug_monitor_task.is_some() {
+            return Ok(());
+        }
+
+        // register all possible vendor id / product id pairings with rusb
+        for usb_identifier in ALL_IDENTIFIERS {
+            let handler = USBHotplugHandler::new(usb_identifier, self.event_tx.clone());
+            let registration = rusb::HotplugBuilder::new()
+                .vendor_id(usb_identifier.vendor_id)
+                .product_id(usb_identifier.product_id)
+                .enumerate(true)
+                .register(self.context.clone(), Box::new(handler))?;
+            self.hotplug_registrations.push(registration);
+        }
+
+        // us a tokio task to keep pressure on the rusb event handling API
+        let task_usb_context = self.context.clone();
+        let mut task_shutdown_rx = self.task_shutdown.subscribe();
+        let hotplug_monitor_task = tokio::task::spawn_blocking(move || loop {
+            task_usb_context.handle_events(Some(HOTPLUG_TASK_TIMEOUT))?;
+            if task_shutdown_rx.try_recv().is_ok() {
+                log::trace!("rusb hotplug monitor task shutdown");
+                return Ok(());
+            }
+        });
+        self.hotplug_monitor_task = Some(hotplug_monitor_task);
+
+        Ok(())
+    }
+
+    fn stop_discovery(&mut self) -> Result<(), crate::Error> {
+        // determine if discovery was already running
+        if self.hotplug_monitor_task.is_none() {
+            return Ok(());
+        }
+
+        // issue shutdown command and wait for completion
+        if let Some(task) = self.hotplug_monitor_task.take() {
+            let _ = self.task_shutdown.send(());
+            let deadline = std::time::Instant::now() + HOTPLUG_TASK_TIMEOUT;
+            while !task.is_finished() {
+                if std::time::Instant::now() >= deadline {
+                    task.abort();
+                    return Err(crate::Error::Debug(
+                        "rusb hotplug monitor task did not stop within timeout".to_string(),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct USBHotplugHandler {
+    usb_identifier: UsbIdentifier,
+    event_tx: mpsc::Sender<UsbDeviceEvent>,
+}
+
+impl USBHotplugHandler {
+    fn new(usb_identifier: UsbIdentifier, event_tx: mpsc::Sender<UsbDeviceEvent>) -> Self {
+        Self {
+            usb_identifier,
+            event_tx,
+        }
+    }
+}
+
+impl rusb::Hotplug<Context> for USBHotplugHandler {
+    fn device_arrived(&mut self, arrived_device: Device<Context>) {
+        log::trace!("{} arrived", self.usb_identifier.name);
+        let event = UsbDeviceEvent::Connected(Box::new(RusbDevice::new(arrived_device)));
+        if let Err(e) = self.event_tx.try_send(event) {
+            log::warn!("Failed to send arrived rusb event: {:?}", e);
+        }
+    }
+
+    fn device_left(&mut self, left_device: Device<Context>) {
+        log::trace!("{} left", self.usb_identifier.name);
+        let event = UsbDeviceEvent::Disconnected(Box::new(RusbDevice::new(left_device)));
+        if let Err(e) = self.event_tx.try_send(event) {
+            log::warn!("Failed to send departed rusb event: {:?}", e);
+        }
+    }
+}
+
+impl From<DeviceDescriptor> for UsbIdentifier {
+    fn from(descriptor: DeviceDescriptor) -> Self {
+        UsbIdentifier {
+            name: "Unknown",
+            vendor_id: descriptor.vendor_id(),
+            product_id: descriptor.product_id(),
+        }
     }
 }

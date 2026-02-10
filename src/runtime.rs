@@ -47,6 +47,8 @@ pub mod remote {
     pub trait RemoteRuntimeConnection<InternalCommand = (), InternalEvent = ()>:
         Debug + Send + Sync
     {
+        fn identifier(&self) -> Identifier;
+
         /// Check if the connection is currently active.
         fn is_connected(&self) -> bool;
 

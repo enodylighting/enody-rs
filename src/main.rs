@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
-use enody::{environment::Environment, usb::UsbEnvironment};
+use enody::{
+    environment::{DiscoveryEnvironment, Environment},
+    usb::UsbEnvironment,
+};
 use std::path::PathBuf;
 
 macro_rules! vprintln {
@@ -32,6 +35,9 @@ enum Commands {
 
     /// Monitor log output from all attached devices
     Monitor,
+
+    /// Monitor USB hotplug events (arrived/left)
+    Hotplug,
 
     /// Set all fixtures to a blackbody configuration
     SetBlackbody {
@@ -120,6 +126,7 @@ async fn main() -> Result<(), enody::Error> {
         Commands::List => list_devices().await?,
         Commands::Info => info_devices().await?,
         Commands::Monitor => monitor_devices().await?,
+        Commands::Hotplug => hotplug_monitor().await?,
         Commands::SetBlackbody { cct, flux } => set_blackbody(cct, flux, cli.verbose).await?,
         Commands::SetChromaticity { x, y, flux } => {
             set_chromaticity(x, y, flux, cli.verbose).await?
@@ -273,6 +280,44 @@ async fn monitor_devices() -> Result<(), enody::Error> {
         .expect("Failed to listen for Ctrl+C");
 
     println!("\nShutting down...");
+    Ok(())
+}
+
+async fn hotplug_monitor() -> Result<(), enody::Error> {
+    use enody::environment::EnvironmentRuntimeEvent;
+
+    let mut environment = UsbEnvironment::new();
+    environment.start_discovery().await?;
+
+    let initial_runtimes = environment.runtimes();
+    println!("Hotplug monitor active. Press Ctrl+C to exit.");
+    println!("Currently connected: {}", initial_runtimes.len());
+    for runtime in &initial_runtimes {
+        if let Ok(host) = runtime.host().await {
+            println!("  {}", host.identifier());
+        }
+    }
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nStopping hotplug monitor...");
+                break;
+            }
+            event = environment.next_runtime_event() => {
+                match event? {
+                    EnvironmentRuntimeEvent::Arrived(runtime) => {
+                        println!("Arrived: {}", runtime.connection().identifier());
+                    }
+                    EnvironmentRuntimeEvent::Left(runtime) => {
+                        println!("Left: {}", runtime.connection().identifier());
+                    }
+                }
+            }
+        }
+    }
+
+    environment.stop_discovery().await?;
     Ok(())
 }
 
