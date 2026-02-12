@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use enody::{environment::Environment, usb::UsbEnvironment};
+use std::path::PathBuf;
 
 macro_rules! vprintln {
     ($verbose:expr, $($arg:tt)*) => {
@@ -101,11 +102,15 @@ enum Commands {
     },
 
     /// Update selected device to newest firmware
-    Update,
+    Update {
+        /// Path to an offline firmware image (.bin)
+        #[arg(short, long, value_name = "FILE")]
+        firmware: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<enody::Error>> {
+async fn main() -> Result<(), enody::Error> {
     env_logger::Builder::from_default_env()
         .format_timestamp_millis()
         .init();
@@ -144,13 +149,13 @@ async fn main() -> Result<(), Box<enody::Error>> {
             )
             .await?
         }
-        Commands::Update => update_remote_host().await?,
+        Commands::Update { firmware } => enody::update::update_remote_host(firmware).await?,
     }
 
     Ok(())
 }
 
-async fn list_devices() -> Result<(), Box<enody::Error>> {
+async fn list_devices() -> Result<(), enody::Error> {
     // Create a USB environment - this automatically enumerates attached devices
     let environment = UsbEnvironment::new();
 
@@ -172,7 +177,7 @@ async fn list_devices() -> Result<(), Box<enody::Error>> {
     Ok(())
 }
 
-async fn info_devices() -> Result<(), Box<enody::Error>> {
+async fn info_devices() -> Result<(), enody::Error> {
     let environment = UsbEnvironment::new();
     let runtimes = environment.runtimes();
 
@@ -243,7 +248,7 @@ async fn info_devices() -> Result<(), Box<enody::Error>> {
     Ok(())
 }
 
-async fn monitor_devices() -> Result<(), Box<enody::Error>> {
+async fn monitor_devices() -> Result<(), enody::Error> {
     let environment = UsbEnvironment::new();
     let runtimes = environment.runtimes();
 
@@ -271,7 +276,7 @@ async fn monitor_devices() -> Result<(), Box<enody::Error>> {
     Ok(())
 }
 
-async fn set_blackbody(cct: f32, flux: f32, verbose: bool) -> Result<(), Box<enody::Error>> {
+async fn set_blackbody(cct: f32, flux: f32, verbose: bool) -> Result<(), enody::Error> {
     use enody::message::{Configuration, Flux};
 
     let environment = UsbEnvironment::new();
@@ -327,7 +332,7 @@ async fn set_chromaticity(
     y: f32,
     flux: f32,
     verbose: bool,
-) -> Result<(), Box<enody::Error>> {
+) -> Result<(), enody::Error> {
     use enody::message::{Chromaticity, Configuration, Flux};
 
     let environment = UsbEnvironment::new();
@@ -384,7 +389,7 @@ async fn strobe(
     duration: f32,
     rate: f32,
     verbose: bool,
-) -> Result<(), Box<enody::Error>> {
+) -> Result<(), enody::Error> {
     use enody::message::{Configuration, Flux};
     use std::time::Duration;
 
@@ -457,7 +462,7 @@ async fn fade(
     duration: f32,
     rate: f32,
     verbose: bool,
-) -> Result<(), Box<enody::Error>> {
+) -> Result<(), enody::Error> {
     use enody::message::{Configuration, Flux};
     use std::time::Duration;
 
@@ -521,9 +526,5 @@ async fn fade(
         duration
     );
 
-    Ok(())
-}
-
-async fn update_remote_host() -> Result<(), Box<enody::Error>> {
     Ok(())
 }

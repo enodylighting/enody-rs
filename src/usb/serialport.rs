@@ -199,7 +199,7 @@ impl SerialPortConnection {
 }
 
 #[derive(Debug)]
-struct SerialPortDevice<InternalCommand = (), InternalEvent = ()> {
+pub(crate) struct SerialPortDevice<InternalCommand = (), InternalEvent = ()> {
     port_name: String,
     serial_number: Option<String>,
     connection: RwLock<Option<SerialPortConnection>>,
@@ -207,7 +207,7 @@ struct SerialPortDevice<InternalCommand = (), InternalEvent = ()> {
 }
 
 impl<InternalCommand, InternalEvent> SerialPortDevice<InternalCommand, InternalEvent> {
-    fn new(port_name: String, serial_number: Option<String>) -> Self {
+    pub(crate) fn new(port_name: String, serial_number: Option<String>) -> Self {
         Self {
             port_name,
             serial_number,
@@ -308,7 +308,7 @@ impl<InternalCommand, InternalEvent> UsbDevice<InternalCommand, InternalEvent>
 pub(crate) struct SerialPortBackend {}
 
 impl SerialPortBackend {
-    fn attached_ports() -> Result<Vec<(String, Option<String>)>, crate::Error> {
+    pub(crate) fn attached_ports() -> Result<Vec<(String, serialport::UsbPortInfo)>, crate::Error> {
         let ports = serialport::available_ports().map_err(|e| crate::Error::USB(e.to_string()))?;
         let mut matching_ports = Vec::new();
 
@@ -317,9 +317,7 @@ impl SerialPortBackend {
                 continue;
             };
 
-            let Some(product) = info.product else {
-                continue;
-            };
+            let product = info.product.as_deref();
 
             // validate the vendor id, product id, and on windows ensure the connection
             // is on "Interface 0". "Interface 2" will also be exposed, but that is the
@@ -327,9 +325,11 @@ impl SerialPortBackend {
             if ALL_IDENTIFIERS.iter().any(|identifier| {
                 identifier.vendor_id == info.vid
                     && identifier.product_id == info.pid
-                    && (cfg!(not(target_os = "windows")) || product.contains("(Interface 0)"))
+                    && (cfg!(not(target_os = "windows"))
+                        || product
+                            .is_some_and(|name| name.contains("(Interface 0)")))
             }) {
-                matching_ports.push((port.port_name, info.serial_number));
+                matching_ports.push((port.port_name, info));
             }
         }
 
@@ -343,7 +343,8 @@ impl UsbBackend for SerialPortBackend {
         let ports = Self::attached_ports()?;
         let mut devices: Vec<Box<dyn UsbDevice>> = Vec::new();
 
-        for (port_name, serial_number) in ports {
+        for (port_name, port_info) in ports {
+            let serial_number = port_info.serial_number;
             devices.push(Box::new(SerialPortDevice::new(port_name, serial_number)));
         }
 

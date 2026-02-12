@@ -23,7 +23,7 @@ pub struct UsbIdentifier {
     pub product_id: u16,
 }
 
-const EP01: UsbIdentifier = UsbIdentifier {
+pub(crate) const EP01: UsbIdentifier = UsbIdentifier {
     name: "EP01",
     vendor_id: 0x303A,
     product_id: 0x1001,
