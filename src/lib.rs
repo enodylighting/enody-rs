@@ -14,6 +14,8 @@ pub mod serialization;
 pub mod source;
 pub mod spectral;
 #[cfg(feature = "remote")]
+pub mod update;
+#[cfg(feature = "remote")]
 pub mod usb;
 
 pub type Identifier = uuid::Uuid;

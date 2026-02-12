@@ -25,6 +25,33 @@
             ],
             "group": "build",
             "label": "cargo build (lib / std)"
+        },
+        {
+            "type": "cargo",
+            "command": "build",
+            "args": [
+                "--bin",
+                "enody",
+                "--no-default-features"
+            ],
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build",
+            "label": "cargo build (bin / no_std)"
+        },
+        {
+            "type": "cargo",
+            "command": "build",
+            "args": [
+                "--bin",
+                "enody"
+            ],
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": "build",
+            "label": "cargo build (bin / std)"
         }
     ]
 }
