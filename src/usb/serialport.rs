@@ -317,17 +317,8 @@ impl SerialPortBackend {
                 continue;
             };
 
-            let product = info.product.as_deref();
-
-            // validate the vendor id, product id, and on windows ensure the connection
-            // is on "Interface 0". "Interface 2" will also be exposed, but that is the
-            // JTAG.
             if ALL_IDENTIFIERS.iter().any(|identifier| {
-                identifier.vendor_id == info.vid
-                    && identifier.product_id == info.pid
-                    && (cfg!(not(target_os = "windows"))
-                        || product
-                            .is_some_and(|name| name.contains("(Interface 0)")))
+                identifier.vendor_id == info.vid && identifier.product_id == info.pid
             }) {
                 matching_ports.push((port.port_name, info));
             }

@@ -56,7 +56,7 @@ impl RusbDeviceConnection {
         device: &Device<Context>,
     ) -> Result<DeviceHandle<Context>, crate::Error> {
         let device_handle = device.open().map_err(|e| {
-            log::error!(
+            log::warn!(
                 "Failed to open device handle (bus={} addr={}): {:?}",
                 device.bus_number(),
                 device.address(),
@@ -92,7 +92,7 @@ impl RusbDeviceConnection {
         device_handle
             .claim_interface(Self::CDC_DATA_INTERFACE)
             .inspect_err(|e| {
-                log::error!(
+                log::warn!(
                     "Failed to claim USB interface {}: {:?}",
                     Self::CDC_DATA_INTERFACE,
                     e

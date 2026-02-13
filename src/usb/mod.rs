@@ -128,7 +128,7 @@ impl Drop for UsbEnvironment {
             }
 
             if let Err(e) = Self::disconnect_runtime(runtime) {
-                log::error!(
+                log::warn!(
                     "Failed to disconnect runtime on UsbEnvironment drop: {:?}",
                     e
                 );
