@@ -1,4 +1,4 @@
-use core::range::RangeInclusive;
+use core::ops::RangeInclusive;
 
 use crate::{message::Flux, spectral::SpectralData, Error, Identifier};
 

@@ -83,7 +83,7 @@ enody fade --from-cct 6500 --to-cct 2700 --duration 5  # Linear CCT fade
 
 ## Build
 
-Requires nightly Rust.
+Requires stable Rust.
 
 ```bash
 cargo build                           # Default features (remote + cli)
