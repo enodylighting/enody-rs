@@ -2,6 +2,7 @@ use core::ops::RangeInclusive;
 
 use crate::{message::Flux, spectral::SpectralData, Error, Identifier};
 
+#[allow(clippy::result_large_err)]
 pub trait Emitter: Send + Sync {
     fn identifier(&self) -> Identifier;
     fn flux_range(&self) -> RangeInclusive<Flux>;

@@ -1,7 +1,16 @@
 #[cfg(feature = "std")]
 pub type UsbDataBuffer = Vec<u8>;
 #[cfg(not(feature = "std"))]
-pub type USBDataBuffer = heapless::Vec<u8, 512>;
+pub type UsbDataBuffer = heapless::Vec<u8, 512>;
+
+macro_rules! buffer_push {
+    ($buffer:expr, $byte:expr) => {
+        #[cfg(feature = "std")]
+        $buffer.push($byte);
+        #[cfg(not(feature = "std"))]
+        $buffer.push($byte).unwrap();
+    };
+}
 
 pub const CONTROL_CHAR_STX: u8 = 0x02;
 pub const CONTROL_CHAR_ETX: u8 = 0x03;
@@ -13,9 +22,9 @@ fn escaped_bytes(payload: &[u8]) -> UsbDataBuffer {
     let mut escaped_bytes = UsbDataBuffer::new();
     for byte in payload {
         if *byte == CONTROL_CHAR_STX || *byte == CONTROL_CHAR_ETX || *byte == CONTROL_CHAR_DLE {
-            escaped_bytes.push(CONTROL_CHAR_DLE);
+            buffer_push!(escaped_bytes, CONTROL_CHAR_DLE);
         }
-        escaped_bytes.push(*byte);
+        buffer_push!(escaped_bytes, *byte);
     }
     escaped_bytes
 }
@@ -26,12 +35,12 @@ fn unescape_bytes(escaped: &[u8]) -> UsbDataBuffer {
 
     for &byte in escaped {
         if is_escaped {
-            unescaped.push(byte);
+            buffer_push!(unescaped, byte);
             is_escaped = false;
         } else if byte == CONTROL_CHAR_DLE {
             is_escaped = true;
         } else {
-            unescaped.push(byte);
+            buffer_push!(unescaped, byte);
         }
     }
     unescaped
@@ -39,12 +48,13 @@ fn unescape_bytes(escaped: &[u8]) -> UsbDataBuffer {
 
 fn frame_bytes(payload: &[u8]) -> UsbDataBuffer {
     let mut frame_bytes = UsbDataBuffer::new();
-    frame_bytes.push(CONTROL_CHAR_STX);
+    buffer_push!(frame_bytes, CONTROL_CHAR_STX);
     frame_bytes.extend(escaped_bytes(payload));
-    frame_bytes.push(CONTROL_CHAR_ETX);
+    buffer_push!(frame_bytes, CONTROL_CHAR_ETX);
     frame_bytes
 }
 
+#[allow(clippy::result_large_err)]
 fn unframe_bytes(frame: &[u8]) -> Result<UsbDataBuffer, crate::Error> {
     // Check minimum frame size
     if frame.len() < FRAME_SIZE_MIN {

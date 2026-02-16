@@ -240,9 +240,9 @@ where
         let (opened_connection, message_rx) =
             SerialPortConnection::open::<InternalCommand, InternalEvent>(&self.port_name)?;
         *connection = Some(opened_connection);
-        
+
         // free the lock before the next await
-        drop(connection); 
+        drop(connection);
 
         let mut rx = self.message_rx.lock().await;
         *rx = Some(message_rx);

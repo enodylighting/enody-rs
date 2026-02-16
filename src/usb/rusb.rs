@@ -187,16 +187,14 @@ impl RusbDeviceConnection {
                     .map_err(|e| crate::Error::USB(e.to_string()));
 
                 if let Ok(bytes_read) = read_result {
-                    for i in 0..bytes_read {
-                        let byte = read_buffer[i];
-
-                        if message_buffer.is_empty() && byte != serialization::CONTROL_CHAR_STX {
+                    for byte in read_buffer.iter().take(bytes_read) {
+                        if message_buffer.is_empty() && *byte != serialization::CONTROL_CHAR_STX {
                             continue;
                         }
 
-                        message_buffer.push(byte);
+                        message_buffer.push(*byte);
 
-                        if byte == serialization::CONTROL_CHAR_ETX && !escaped {
+                        if *byte == serialization::CONTROL_CHAR_ETX && !escaped {
                             match Message::<InternalCommand, InternalEvent>::try_from(
                                 message_buffer.clone(),
                             ) {
@@ -211,7 +209,7 @@ impl RusbDeviceConnection {
                             message_buffer.clear();
                         }
 
-                        escaped = byte == serialization::CONTROL_CHAR_DLE && !escaped;
+                        escaped = (*byte == serialization::CONTROL_CHAR_DLE) && !escaped;
                     }
                 }
 
@@ -229,7 +227,9 @@ impl RusbDeviceConnection {
 
     fn serial_number(&self) -> Option<String> {
         let descriptor = self.handle.device().device_descriptor().ok()?;
-        self.handle.read_serial_number_string_ascii(&descriptor).ok()
+        self.handle
+            .read_serial_number_string_ascii(&descriptor)
+            .ok()
     }
 }
 
@@ -337,11 +337,7 @@ impl<InternalCommand, InternalEvent> UsbDevice<InternalCommand, InternalEvent> f
     }
 
     fn serial_number(&self) -> Option<String> {
-        self.connection
-            .try_read()
-            .ok()?
-            .as_ref()?
-            .serial_number()
+        self.connection.try_read().ok()?.as_ref()?.serial_number()
     }
 }
 

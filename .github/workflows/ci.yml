@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - "main"
+
+env:
+  CARGO_TERM_COLOR: always
+  MSRV: "1.85"
+
+# Cancel any currently running workflows from the same PR, branch, or
+# tag when a new workflow is triggered.
+#
+# https://stackoverflow.com/a/66336834
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Check
+
+  check-lib:
+    name: Check lib (${{ matrix.mode.name }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - name: std
+            args: --no-default-features --features std
+          - name: no_std
+            args: --no-default-features
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - run: RUSTFLAGS="-D warnings" cargo check --lib ${{ matrix.mode.args }}
+
+  msrv:
+    name: Check lib MSRV (${{ matrix.mode.name }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - name: std
+            args: --no-default-features --features std
+          - name: no_std
+            args: --no-default-features
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.MSRV }}
+      - run: cargo check --lib ${{ matrix.mode.args }}
+
+  # --------------------------------------------------------------------------
+  # Test
+
+  test:
+    name: Unit Tests (${{ matrix.mode.name }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - name: std
+            args: --no-default-features --features std
+          - name: no_std
+            args: --no-default-features
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --lib ${{ matrix.mode.args }}
+
+  # --------------------------------------------------------------------------
+  # Lint
+
+  clippy:
+    name: Clippy (${{ matrix.mode.name }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+          - name: std
+            args: --no-default-features --features std
+          - name: no_std
+            args: --no-default-features
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --lib ${{ matrix.mode.args }} -- -D warnings
+
+  rustfmt:
+    name: Rustfmt
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check

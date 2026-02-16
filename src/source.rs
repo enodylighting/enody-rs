@@ -7,6 +7,7 @@ use crate::{
 };
 
 /// Represents a light source containing one or more emitters.
+#[allow(clippy::result_large_err)]
 pub trait Source: Send + Sync {
     fn identifier(&self) -> Identifier;
     fn display(

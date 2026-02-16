@@ -7,6 +7,7 @@ use crate::{
 };
 
 /// Represents a fixture containing one or more light sources.
+#[allow(clippy::result_large_err)]
 pub trait Fixture: Send + Sync {
     fn identifier(&self) -> Identifier;
     fn display(

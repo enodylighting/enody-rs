@@ -5,6 +5,7 @@ use crate::{
     message::{CommandMessage, EventMessage},
 };
 
+#[allow(clippy::result_large_err)]
 pub trait Runtime<InternalCommand = (), InternalEvent = ()> {
     fn execute_command(
         &mut self,
@@ -210,7 +211,7 @@ pub mod remote {
                 }
 
                 // Forward unmatched messages to the channel
-                if let Err(_) = inner.message_tx.send(message).await {
+                if inner.message_tx.send(message).await.is_err() {
                     log::trace!("Message channel closed, dispatch task ending");
                     break;
                 }
@@ -254,7 +255,7 @@ pub mod remote {
             command: CommandMessage<()>,
         ) -> Result<EventMessage<()>, crate::Error> {
             let command_debug = format!("{:?}", command.command);
-            let context = command.identifier.clone();
+            let context = command.identifier;
             let (response_tx, response_rx) = oneshot::channel();
 
             // Register for the response

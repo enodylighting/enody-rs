@@ -327,12 +327,7 @@ async fn set_blackbody(cct: f32, flux: f32, verbose: bool) -> Result<(), enody::
     Ok(())
 }
 
-async fn set_chromaticity(
-    x: f32,
-    y: f32,
-    flux: f32,
-    verbose: bool,
-) -> Result<(), enody::Error> {
+async fn set_chromaticity(x: f32, y: f32, flux: f32, verbose: bool) -> Result<(), enody::Error> {
     use enody::message::{Chromaticity, Configuration, Flux};
 
     let environment = UsbEnvironment::new();

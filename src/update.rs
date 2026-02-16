@@ -4,8 +4,7 @@ use crate::{
     runtime::remote::RemoteRuntime,
     usb::serialport::{SerialPortBackend, SerialPortDevice},
     usb::UsbEnvironment,
-    Error,
-    Identifier,
+    Error, Identifier,
 };
 use std::{
     io::{self, Write as _},
@@ -32,16 +31,24 @@ impl EP01UpdateTarget {
         // query each device for a HostInfo
         let mut hosts = Vec::<Self>::new();
         for (port_name, port_info) in matches {
-            let device = SerialPortDevice::new(port_name.to_string(), port_info.serial_number.clone());
+            let device =
+                SerialPortDevice::new(port_name.to_string(), port_info.serial_number.clone());
             let runtime = RemoteRuntime::new(Box::new(device));
             if runtime.connect().await.is_err() {
-                log::warn!("failed to connect to deivce: {:?}", port_info.serial_number.clone());
+                log::warn!(
+                    "failed to connect to deivce: {:?}",
+                    port_info.serial_number.clone()
+                );
                 continue;
             }
 
             // attempt to connect and fetch HostInfo
-            let Ok(Ok(host)) = tokio::time::timeout(CONNECTION_TIMEOUT, runtime.host()).await else {
-                log::warn!("failed to collect HostInfo from device: {:?}", port_info.serial_number.clone());
+            let Ok(Ok(host)) = tokio::time::timeout(CONNECTION_TIMEOUT, runtime.host()).await
+            else {
+                log::warn!(
+                    "failed to collect HostInfo from device: {:?}",
+                    port_info.serial_number.clone()
+                );
                 continue;
             };
             let _ = runtime.disconnect().await;
@@ -49,7 +56,7 @@ impl EP01UpdateTarget {
             // check if host is already present on another port
             let host_info = HostInfo {
                 version: host.version(),
-                identifier: host.identifier()
+                identifier: host.identifier(),
             };
 
             if let Some(existing) = hosts
@@ -156,7 +163,9 @@ impl EP01UpdateTarget {
             tokio::time::sleep(interval).await;
         }
 
-        Err(Error::Debug("Timed out waiting for update verification.".into()))
+        Err(Error::Debug(
+            "Timed out waiting for update verification.".into(),
+        ))
     }
 }
 
@@ -186,9 +195,7 @@ fn firmware_path(host_identifier: Identifier, firmware: Option<PathBuf>) -> Resu
 
 fn select_update_target(mut hosts: Vec<EP01UpdateTarget>) -> Result<EP01UpdateTarget, Error> {
     if hosts.is_empty() {
-        return Err(Error::Debug(
-            "No EP01 devices available.".into(),
-        ));
+        return Err(Error::Debug("No EP01 devices available.".into()));
     }
 
     // print selection prompt to screen
@@ -201,7 +208,11 @@ fn select_update_target(mut hosts: Vec<EP01UpdateTarget>) -> Result<EP01UpdateTa
             host.info.version
         );
     }
-    let selection_counter = if hosts.len() > 1 { format!(" [1-{}", hosts.len()) } else { "".into() };
+    let selection_counter = if hosts.len() > 1 {
+        format!(" [1-{}", hosts.len())
+    } else {
+        "".into()
+    };
     print!("Select device{}: ", selection_counter);
     io::stdout()
         .flush()

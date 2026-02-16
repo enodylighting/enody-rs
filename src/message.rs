@@ -1,3 +1,5 @@
+#![allow(clippy::large_enum_variant)]
+
 use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
 
@@ -66,7 +68,7 @@ impl<InternalCommand> CommandMessage<InternalCommand> {
     pub fn child(&self, command: Command<InternalCommand>, resource: Option<Identifier>) -> Self {
         Self {
             identifier: uuid::Uuid::new_v4(),
-            context: Some(self.identifier.clone()),
+            context: Some(self.identifier),
             resource,
             command,
         }
@@ -77,11 +79,11 @@ impl<InternalCommand> CommandMessage<InternalCommand> {
     }
 
     pub fn context(&self) -> Option<Identifier> {
-        self.context.clone()
+        self.context
     }
 
     pub fn resource(&self) -> Option<Identifier> {
-        self.resource.clone()
+        self.resource
     }
 
     pub fn action(&self) -> &Command<InternalCommand> {
