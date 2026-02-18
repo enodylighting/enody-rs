@@ -6,16 +6,10 @@ use crate::{
 };
 
 #[allow(clippy::result_large_err)]
-pub trait Runtime<InternalCommand = (), InternalEvent = ()> {
-    fn execute_command(
-        &mut self,
-        message: CommandMessage<InternalCommand>,
-    ) -> Result<EventMessage<InternalEvent>, crate::Error>;
-    fn handle_command(
-        &mut self,
-        message: CommandMessage<InternalCommand>,
-    ) -> Result<(), crate::Error>;
-    fn handle_event(&mut self, message: EventMessage<InternalEvent>) -> Result<(), crate::Error>;
+pub trait Runtime {
+    fn execute_command(&mut self, message: CommandMessage) -> Result<EventMessage, crate::Error>;
+    fn handle_command(&mut self, message: CommandMessage) -> Result<(), crate::Error>;
+    fn handle_event(&mut self, message: EventMessage) -> Result<(), crate::Error>;
     fn host(&self) -> Box<dyn Host>;
 }
 
@@ -44,9 +38,7 @@ pub mod remote {
     /// The connection is a naive message shuttler with no command/response logic.
     /// Implementations must handle their own internal synchronization.
     #[async_trait]
-    pub trait RemoteRuntimeConnection<InternalCommand = (), InternalEvent = ()>:
-        Debug + Send + Sync
-    {
+    pub trait RemoteRuntimeConnection: Debug + Send + Sync {
         fn identifier(&self) -> Identifier;
 
         /// Check if the connection is currently active.
@@ -59,23 +51,18 @@ pub mod remote {
         async fn disconnect(&self) -> Result<(), crate::Error>;
 
         /// Send a message to the remote runtime.
-        async fn send_message(
-            &self,
-            message: Message<InternalCommand, InternalEvent>,
-        ) -> Result<(), crate::Error>;
+        async fn send_message(&self, message: Message) -> Result<(), crate::Error>;
 
         /// Receive the next message from the remote runtime.
         /// This should block until a message is available or the connection is closed.
-        async fn recv_message(
-            &self,
-        ) -> Result<Message<InternalCommand, InternalEvent>, crate::Error>;
+        async fn recv_message(&self) -> Result<Message, crate::Error>;
     }
 
     /// Registration for a pending command awaiting its response.
     #[derive(Debug)]
     struct CommandResponseRegistration {
         context: Identifier,
-        response_tx: Option<oneshot::Sender<EventMessage<()>>>,
+        response_tx: Option<oneshot::Sender<EventMessage>>,
     }
 
     /// Shared internal state for RemoteRuntime.
@@ -85,8 +72,8 @@ pub mod remote {
         connection: Arc<dyn RemoteRuntimeConnection>,
         pending_commands: AsyncMutex<Vec<CommandResponseRegistration>>,
         /// Channel for messages that aren't command responses (e.g., unsolicited events)
-        message_tx: tokio::sync::mpsc::Sender<Message<(), ()>>,
-        message_rx: AsyncMutex<tokio::sync::mpsc::Receiver<Message<(), ()>>>,
+        message_tx: tokio::sync::mpsc::Sender<Message>,
+        message_rx: AsyncMutex<tokio::sync::mpsc::Receiver<Message>>,
         /// Whether to log incoming Log events using the log crate
         logging_enabled: AtomicBool,
         dispatch_task: AsyncMutex<Option<JoinHandle<()>>>,
@@ -254,8 +241,8 @@ pub mod remote {
         /// response event is received, matching by context identifier.
         pub async fn execute_command(
             &self,
-            command: CommandMessage<()>,
-        ) -> Result<EventMessage<()>, crate::Error> {
+            command: CommandMessage,
+        ) -> Result<EventMessage, crate::Error> {
             let command_debug = format!("{:?}", command.command);
             let context = command.identifier;
             let (response_tx, response_rx) = oneshot::channel();
@@ -298,20 +285,20 @@ pub mod remote {
         }
 
         /// Send a command message (fire-and-forget).
-        pub async fn send_command(&self, command: CommandMessage<()>) -> Result<(), crate::Error> {
+        pub async fn send_command(&self, command: CommandMessage) -> Result<(), crate::Error> {
             let message = Message::Command(command);
             self.inner.connection.send_message(message).await
         }
 
         /// Send an event message.
-        pub async fn send_event(&self, event: EventMessage<()>) -> Result<(), crate::Error> {
+        pub async fn send_event(&self, event: EventMessage) -> Result<(), crate::Error> {
             let message = Message::Event(event);
             self.inner.connection.send_message(message).await
         }
 
         /// Receive the next unmatched message from the remote runtime.
         /// This returns messages that weren't matched as command responses.
-        pub async fn next_message(&self) -> Result<Message<(), ()>, crate::Error> {
+        pub async fn next_message(&self) -> Result<Message, crate::Error> {
             let mut rx = self.inner.message_rx.lock().await;
             match rx.recv().await {
                 Some(message) => Ok(message),

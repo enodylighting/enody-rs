@@ -108,21 +108,7 @@ impl RusbDeviceConnection {
         Ok(device_handle)
     }
 
-    fn open<InternalCommand, InternalEvent>(
-        device: &Device<Context>,
-    ) -> Result<
-        (
-            Self,
-            mpsc::Receiver<Message<InternalCommand, InternalEvent>>,
-        ),
-        crate::Error,
-    >
-    where
-        InternalCommand:
-            Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
-        InternalEvent:
-            Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
-    {
+    fn open(device: &Device<Context>) -> Result<(Self, mpsc::Receiver<Message>), crate::Error> {
         log::debug!(
             "Opening USB device: bus={} address={} (VID={:#06x} PID={:#06x})",
             device.bus_number(),
@@ -171,17 +157,11 @@ impl RusbDeviceConnection {
         Ok(())
     }
 
-    fn message_rx_closure<InternalCommand, InternalEvent>(
+    fn message_rx_closure(
         device_handle: &Arc<DeviceHandle<Context>>,
-        message_tx: mpsc::Sender<Message<InternalCommand, InternalEvent>>,
+        message_tx: mpsc::Sender<Message>,
         mut task_shutdown: broadcast::Receiver<()>,
-    ) -> impl FnOnce() -> Result<(), crate::Error>
-    where
-        InternalCommand:
-            Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
-        InternalEvent:
-            Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
-    {
+    ) -> impl FnOnce() -> Result<(), crate::Error> {
         let task_handle = device_handle.clone();
         move || {
             let mut message_buffer = Vec::<u8>::new();
@@ -202,9 +182,7 @@ impl RusbDeviceConnection {
                         message_buffer.push(*byte);
 
                         if *byte == serialization::CONTROL_CHAR_ETX && !escaped {
-                            match Message::<InternalCommand, InternalEvent>::try_from(
-                                message_buffer.clone(),
-                            ) {
+                            match Message::try_from(message_buffer.clone()) {
                                 Ok(message) => {
                                     log::trace!("received message: {:?}", message);
                                     if let Err(_e) = message_tx.try_send(message) {}
@@ -241,14 +219,14 @@ impl RusbDeviceConnection {
 }
 
 #[derive(Debug)]
-struct RusbDevice<InternalCommand = (), InternalEvent = ()> {
+struct RusbDevice {
     connection: RwLock<Option<RusbDeviceConnection>>,
     device: Device<Context>,
     identifier: Identifier,
-    message_rx: Mutex<Option<mpsc::Receiver<Message<InternalCommand, InternalEvent>>>>,
+    message_rx: Mutex<Option<mpsc::Receiver<Message>>>,
 }
 
-impl<InternalCommand, InternalEvent> RusbDevice<InternalCommand, InternalEvent> {
+impl RusbDevice {
     fn new(device: Device<Context>) -> Self {
         let identifier = Identifier::new_v4();
         Self {
@@ -261,12 +239,7 @@ impl<InternalCommand, InternalEvent> RusbDevice<InternalCommand, InternalEvent> 
 }
 
 #[async_trait]
-impl<InternalCommand, InternalEvent> RemoteRuntimeConnection<InternalCommand, InternalEvent>
-    for RusbDevice<InternalCommand, InternalEvent>
-where
-    InternalCommand: Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
-    InternalEvent: Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
-{
+impl RemoteRuntimeConnection for RusbDevice {
     fn identifier(&self) -> Identifier {
         self.identifier
     }
@@ -287,8 +260,7 @@ where
                 return Ok(());
             }
 
-            let (opened_connection, message_rx) =
-                RusbDeviceConnection::open::<InternalCommand, InternalEvent>(&self.device)?;
+            let (opened_connection, message_rx) = RusbDeviceConnection::open(&self.device)?;
             *connection = Some(opened_connection);
             message_rx
         };
@@ -316,10 +288,7 @@ where
         Ok(())
     }
 
-    async fn send_message(
-        &self,
-        message: Message<InternalCommand, InternalEvent>,
-    ) -> Result<(), crate::Error> {
+    async fn send_message(&self, message: Message) -> Result<(), crate::Error> {
         let connection = self.connection.read().await;
         let Some(connection) = connection.as_ref() else {
             return Err(crate::Error::USB("No active connection".to_string()));
@@ -334,7 +303,7 @@ where
         Ok(())
     }
 
-    async fn recv_message(&self) -> Result<Message<InternalCommand, InternalEvent>, crate::Error> {
+    async fn recv_message(&self) -> Result<Message, crate::Error> {
         let rx = {
             let mut rx_guard = self.message_rx.lock().unwrap();
             rx_guard.take()
@@ -354,7 +323,7 @@ where
     }
 }
 
-impl<InternalCommand, InternalEvent> UsbDevice<InternalCommand, InternalEvent> for RusbDevice {
+impl UsbDevice for RusbDevice {
     fn identifier(&self) -> UsbIdentifier {
         EP01
     }
