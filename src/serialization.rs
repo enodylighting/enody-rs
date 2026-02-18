@@ -71,12 +71,7 @@ fn unframe_bytes(frame: &[u8]) -> Result<UsbDataBuffer, crate::Error> {
     Ok(unescape_bytes(payload))
 }
 
-impl<InternalCommand, InternalEvent> TryFrom<UsbDataBuffer>
-    for crate::message::Message<InternalCommand, InternalEvent>
-where
-    InternalCommand: serde::de::DeserializeOwned + serde::Serialize,
-    InternalEvent: serde::de::DeserializeOwned + serde::Serialize,
-{
+impl TryFrom<UsbDataBuffer> for crate::message::Message {
     type Error = crate::Error;
     fn try_from(bytes: UsbDataBuffer) -> Result<Self, Self::Error> {
         let unframed_bytes = unframe_bytes(&bytes)?;
@@ -84,16 +79,9 @@ where
     }
 }
 
-impl<InternalCommand, InternalEvent>
-    TryFrom<crate::message::Message<InternalCommand, InternalEvent>> for UsbDataBuffer
-where
-    InternalCommand: serde::de::DeserializeOwned + serde::Serialize,
-    InternalEvent: serde::de::DeserializeOwned + serde::Serialize,
-{
+impl TryFrom<crate::message::Message> for UsbDataBuffer {
     type Error = crate::Error;
-    fn try_from(
-        message: crate::message::Message<InternalCommand, InternalEvent>,
-    ) -> Result<Self, Self::Error> {
+    fn try_from(message: crate::message::Message) -> Result<Self, Self::Error> {
         #[cfg(feature = "std")]
         let message_bytes: UsbDataBuffer =
             postcard::to_allocvec(&message).map_err(|_| crate::Error::Serialization)?;

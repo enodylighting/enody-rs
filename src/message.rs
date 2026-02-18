@@ -42,21 +42,21 @@ impl core::fmt::Display for Version {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Message<InternalCommand = (), InternalEvent = ()> {
-    Command(CommandMessage<InternalCommand>),
-    Event(EventMessage<InternalEvent>),
+pub enum Message {
+    Command(CommandMessage),
+    Event(EventMessage),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CommandMessage<InternalCommand> {
+pub struct CommandMessage {
     pub identifier: Identifier,
     pub context: Option<Identifier>,
     pub resource: Option<Identifier>,
-    pub command: Command<InternalCommand>,
+    pub command: Command,
 }
 
-impl<InternalCommand> CommandMessage<InternalCommand> {
-    pub fn root(command: Command<InternalCommand>, resource: Option<Identifier>) -> Self {
+impl CommandMessage {
+    pub fn root(command: Command, resource: Option<Identifier>) -> Self {
         Self {
             identifier: uuid::Uuid::new_v4(),
             context: None,
@@ -65,7 +65,7 @@ impl<InternalCommand> CommandMessage<InternalCommand> {
         }
     }
 
-    pub fn child(&self, command: Command<InternalCommand>, resource: Option<Identifier>) -> Self {
+    pub fn child(&self, command: Command, resource: Option<Identifier>) -> Self {
         Self {
             identifier: uuid::Uuid::new_v4(),
             context: Some(self.identifier),
@@ -86,14 +86,14 @@ impl<InternalCommand> CommandMessage<InternalCommand> {
         self.resource
     }
 
-    pub fn action(&self) -> &Command<InternalCommand> {
+    pub fn action(&self) -> &Command {
         &self.command
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Command<InternalCommand = ()> {
-    Internal(InternalCommand),
+pub enum Command {
+    Internal,
     Host(HostCommand),
     Runtime(RuntimeCommand),
     Environment(EnvironmentCommand),
@@ -103,17 +103,17 @@ pub enum Command<InternalCommand = ()> {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct EventMessage<InternalEvent> {
+pub struct EventMessage {
     pub identifier: Identifier,
     pub context: Option<Identifier>,
     pub resource: Option<Identifier>,
-    pub event: Event<InternalEvent>,
+    pub event: Event,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Event<InternalEvent = ()> {
+pub enum Event {
     Error(crate::Error),
-    Internal(InternalEvent),
+    Internal,
     Host(HostEvent),
     Runtime(RuntimeEvent),
     Environment(EnvironmentEvent),

@@ -47,7 +47,7 @@ pub(crate) const EP01: UsbIdentifier = UsbIdentifier {
 
 pub(crate) const ALL_IDENTIFIERS: [UsbIdentifier; 1] = [EP01];
 
-pub trait UsbDevice<InternalCommand = (), InternalEvent = ()>: RemoteRuntimeConnection {
+pub trait UsbDevice: RemoteRuntimeConnection {
     fn identifier(&self) -> UsbIdentifier;
     fn serial_number(&self) -> Option<String>;
     fn connection_key(&self) -> String;

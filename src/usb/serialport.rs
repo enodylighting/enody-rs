@@ -81,18 +81,12 @@ impl SerialPortConnection {
         Ok(port)
     }
 
-    fn message_rx_closure<InternalCommand, InternalEvent>(
+    fn message_rx_closure(
         mut serial_port: Box<dyn SerialPort>,
-        message_tx: mpsc::Sender<Message<InternalCommand, InternalEvent>>,
+        message_tx: mpsc::Sender<Message>,
         serial_rx: std_mpsc::Receiver<Vec<u8>>,
         mut task_shutdown: broadcast::Receiver<()>,
-    ) -> impl FnOnce() -> Result<(), crate::Error>
-    where
-        InternalCommand:
-            Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
-        InternalEvent:
-            Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
-    {
+    ) -> impl FnOnce() -> Result<(), crate::Error> {
         move || {
             let mut message_buffer = Vec::<u8>::new();
             let mut escaped = false;
@@ -121,9 +115,7 @@ impl SerialPortConnection {
                             message_buffer.push(byte);
 
                             if byte == serialization::CONTROL_CHAR_ETX && !escaped {
-                                match Message::<InternalCommand, InternalEvent>::try_from(
-                                    message_buffer.clone(),
-                                ) {
+                                match Message::try_from(message_buffer.clone()) {
                                     Ok(message) => {
                                         log::trace!("received message: {:?}", message);
                                         if let Err(_e) = message_tx.try_send(message) {}
@@ -153,21 +145,7 @@ impl SerialPortConnection {
         }
     }
 
-    fn open<InternalCommand, InternalEvent>(
-        port_name: &str,
-    ) -> Result<
-        (
-            Self,
-            mpsc::Receiver<Message<InternalCommand, InternalEvent>>,
-        ),
-        crate::Error,
-    >
-    where
-        InternalCommand:
-            Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
-        InternalEvent:
-            Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
-    {
+    fn open(port_name: &str) -> Result<(Self, mpsc::Receiver<Message>), crate::Error> {
         let serial_port = Self::open_port(port_name)?;
         let (message_tx, message_rx) = mpsc::channel(MESSAGE_CHANNEL_SIZE);
         let (serial_tx, serial_rx) = std_mpsc::channel::<Vec<u8>>();
@@ -203,15 +181,15 @@ impl SerialPortConnection {
 }
 
 #[derive(Debug)]
-pub(crate) struct SerialPortDevice<InternalCommand = (), InternalEvent = ()> {
+pub(crate) struct SerialPortDevice {
     connection: RwLock<Option<SerialPortConnection>>,
     identifier: Identifier,
-    message_rx: AsyncMutex<Option<mpsc::Receiver<Message<InternalCommand, InternalEvent>>>>,
+    message_rx: AsyncMutex<Option<mpsc::Receiver<Message>>>,
     port_name: String,
     serial_number: Option<String>,
 }
 
-impl<InternalCommand, InternalEvent> SerialPortDevice<InternalCommand, InternalEvent> {
+impl SerialPortDevice {
     pub(crate) fn new(port_name: String, serial_number: Option<String>) -> Self {
         Self {
             connection: RwLock::new(None),
@@ -224,12 +202,7 @@ impl<InternalCommand, InternalEvent> SerialPortDevice<InternalCommand, InternalE
 }
 
 #[async_trait]
-impl<InternalCommand, InternalEvent> RemoteRuntimeConnection<InternalCommand, InternalEvent>
-    for SerialPortDevice<InternalCommand, InternalEvent>
-where
-    InternalCommand: Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
-    InternalEvent: Debug + Send + Sync + 'static + serde::de::DeserializeOwned + serde::Serialize,
-{
+impl RemoteRuntimeConnection for SerialPortDevice {
     fn identifier(&self) -> Identifier {
         self.identifier
     }
@@ -247,8 +220,7 @@ where
             return Ok(());
         }
 
-        let (opened_connection, message_rx) =
-            SerialPortConnection::open::<InternalCommand, InternalEvent>(&self.port_name)?;
+        let (opened_connection, message_rx) = SerialPortConnection::open(&self.port_name)?;
         *connection = Some(opened_connection);
 
         // free the lock before the next await
@@ -277,10 +249,7 @@ where
         Ok(())
     }
 
-    async fn send_message(
-        &self,
-        message: Message<InternalCommand, InternalEvent>,
-    ) -> Result<(), crate::Error> {
+    async fn send_message(&self, message: Message) -> Result<(), crate::Error> {
         let connection = self.connection.read().await;
         let Some(connection) = connection.as_ref() else {
             return Err(crate::Error::USB("No active connection".to_string()));
@@ -291,7 +260,7 @@ where
         connection.send_payload(payload)
     }
 
-    async fn recv_message(&self) -> Result<Message<InternalCommand, InternalEvent>, crate::Error> {
+    async fn recv_message(&self) -> Result<Message, crate::Error> {
         let mut rx = self.message_rx.lock().await;
         let Some(rx) = rx.as_mut() else {
             return Err(crate::Error::USB("No active connection".to_string()));
@@ -302,9 +271,7 @@ where
     }
 }
 
-impl<InternalCommand, InternalEvent> UsbDevice<InternalCommand, InternalEvent>
-    for SerialPortDevice
-{
+impl UsbDevice for SerialPortDevice {
     fn identifier(&self) -> UsbIdentifier {
         ALL_IDENTIFIERS[0]
     }
