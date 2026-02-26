@@ -297,6 +297,9 @@ pub enum RuntimeCommand {
     Host,
     EnvironmentCount,
     EnvironmentInfo(u32),
+    SettingGet(SettingKey),
+    SettingSet(SettingKey, SettingValue),
+    SettingDelete(SettingKey),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -306,12 +309,25 @@ pub enum RuntimeEvent {
     Host(HostInfo),
     EnvironmentCount(u32),
     EnvironmentInfo(EnvironmentInfo),
+    SettingGet(SettingKey, SettingValue),
+    SettingSet(SettingKey),
+    SettingDelete(SettingKey),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RuntimeInfo {
     pub version: Version,
     pub identifier: Identifier,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub enum SettingKey {
+	MaxPower,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum SettingValue {
+	MaxPower(f32),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

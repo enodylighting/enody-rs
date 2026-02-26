@@ -16,11 +16,10 @@ pub trait Runtime {
 #[cfg(feature = "remote")]
 pub mod remote {
     use crate::{
-        host::remote::RemoteHost,
-        message::{CommandMessage, Event, EventMessage, LogLevel, Message, RuntimeEvent},
-        Identifier,
+        Identifier, host::remote::RemoteHost, message::{Command, CommandMessage, Event, EventMessage, LogLevel, Message, RuntimeCommand, RuntimeEvent, SettingKey, SettingValue}
     };
     use async_trait::async_trait;
+
     use std::{
         fmt::Debug,
         sync::{
@@ -371,6 +370,36 @@ pub mod remote {
         /// Create a RemoteHost by querying the device for its host information.
         pub async fn host(&self) -> Result<RemoteHost, crate::Error> {
             RemoteHost::from_runtime(self.clone()).await
+        }
+
+        pub async fn setting_get(&self, key: SettingKey) -> Result<SettingValue, crate::Error> {
+            let command = Command::Runtime(RuntimeCommand::SettingGet(key));
+            let command_message = CommandMessage::root(command,None);
+            let event_message = self.execute_command(command_message).await?;
+            match event_message.event {
+                Event::Runtime(RuntimeEvent::SettingGet(_, value)) => Ok(value),
+                _ => Err(crate::Error::UnexpectedResponse),
+            }
+        }
+
+        pub async fn setting_set(&self, key: SettingKey, value: SettingValue) -> Result<(), crate::Error> {
+            let command = Command::Runtime(RuntimeCommand::SettingSet(key, value));
+            let command_message = CommandMessage::root(command,None);
+            let event_message = self.execute_command(command_message).await?;
+            match event_message.event {
+                Event::Runtime(RuntimeEvent::SettingSet(_)) => Ok(()),
+                _ => Err(crate::Error::UnexpectedResponse),
+            }
+        }
+
+        pub async fn setting_delete(&self, key: SettingKey) -> Result<(), crate::Error> {
+            let command = Command::Runtime(RuntimeCommand::SettingDelete(key));
+            let command_message = CommandMessage::root(command,None);
+            let event_message = self.execute_command(command_message).await?;
+            match event_message.event {
+                Event::Runtime(RuntimeEvent::SettingDelete(_)) => Ok(()),
+                _ => Err(crate::Error::UnexpectedResponse),
+            }
         }
 
         /// Get a reference to the underlying connection.
