@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Measurement;
 
-const DEFAULT_SAMPLE_COUNT: usize = 41; // 380nm-780nm, 10 nm interval
+const DEFAULT_SAMPLE_COUNT: usize = 401; // 380nm-780nm, 1 nm interval
 
 /// A SpectralSample stores a wavelength and a corresponding dimensionless measurement.
 /// The measurement can represent transmitance, reflectance, and absorbance.
@@ -14,6 +14,13 @@ pub struct SpectralSample {
 }
 
 impl SpectralSample {
+    pub fn new(wavelength: Measurement, measurement: Measurement) -> Self {
+        Self {
+            wavelength,
+            measurement,
+        }
+    }
+
     pub fn wavelength(&self) -> Measurement {
         self.wavelength
     }
@@ -23,29 +30,17 @@ impl SpectralSample {
     }
 }
 
+/// A SpectralData is a collection of SpectralSamples.
 pub struct SpectralData<const SAMPLE_COUNT: usize = DEFAULT_SAMPLE_COUNT> {
     samples: Vec<SpectralSample, SAMPLE_COUNT>,
 }
 
 impl<const SAMPLE_COUNT: usize> SpectralData<SAMPLE_COUNT> {
+    pub fn new(samples: Vec<SpectralSample, SAMPLE_COUNT>) -> Self {
+        Self { samples }
+    }
+
     pub fn samples(&self) -> &Vec<SpectralSample, SAMPLE_COUNT> {
         &self.samples
     }
-
-    // pub fn samples(&self) -> [SpectralSample<Measurement>; SPECTRAL_RESOLUTION] {
-    //     let mut samples = [SpectralSample::default(); SPECTRAL_RESOLUTION];
-    //     for i in 0..self.sample_count() {
-    //         samples[i].wavelength = self.wavelengths[i];
-    //         samples[i].measurement = self.measurements[i];
-    //     }
-    //     samples
-    // }
-
-    // pub fn wavelengths(&self) -> &Vec<Wavelength, SPECTRAL_RESOLUTION> {
-    //     &self.wavelengths
-    // }
-
-    // pub fn measurements(&self) -> &Vec<Measurement, SPECTRAL_RESOLUTION> {
-    //     &self.measurements
-    // }
 }

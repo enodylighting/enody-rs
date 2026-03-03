@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{spectral::SpectralSample, Identifier, Measurement};
 
-const SPECTRAL_SAMPLE_BATCH_SIZE: usize = 32;
+pub const SPECTRAL_SAMPLE_BATCH_SIZE: usize = 32;
 const LOG_EVENT_BUFFER_SIZE: usize = 256;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -189,7 +189,7 @@ pub enum EmitterCommand {
     Info,
     FluxRange,
     FluxSet(Flux),
-    SpectralData(Flux),
+    SpectralData(SpectralDataCommand),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -197,7 +197,7 @@ pub enum EmitterEvent {
     Info(EmitterInfo),
     FluxRange(Flux, Flux),
     FluxSet(Flux),
-    SpectralData(SpectralDataInfo, Flux),
+    SpectralData(SpectralDataEvent),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -205,9 +205,16 @@ pub struct EmitterInfo {
     identifier: Identifier,
 }
 
+impl EmitterInfo {
+    pub fn identifier(&self) -> Identifier {
+        self.identifier
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum SpectralDataCommand {
     Info,
+    Domain,
     SampleCount,
     Sample(u32),
     SampleBatch(u32, u32),
@@ -216,6 +223,7 @@ pub enum SpectralDataCommand {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum SpectralDataEvent {
     Info(SpectralDataInfo),
+    Domain(Measurement, Measurement),
     SampleCount(u32),
     Sample(SpectralSample),
     SampleBatch(Vec<SpectralSample, SPECTRAL_SAMPLE_BATCH_SIZE>),
@@ -224,7 +232,16 @@ pub enum SpectralDataEvent {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SpectralDataInfo {
     identifier: Identifier,
-    domain: (Measurement, Measurement),
+}
+
+impl SpectralDataInfo {
+    pub fn new(identifier: Identifier) -> Self {
+        Self { identifier }
+    }
+
+    pub fn identifier(&self) -> Identifier {
+        self.identifier
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

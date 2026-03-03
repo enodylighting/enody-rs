@@ -21,9 +21,10 @@ pub trait Source: Send + Sync {
 #[cfg(feature = "remote")]
 pub mod remote {
     use crate::{
+        emitter::remote::RemoteEmitter,
         message::{
-            Command, CommandMessage, Configuration, Event, Flux, SourceCommand, SourceEvent,
-            SourceInfo,
+            Command, CommandMessage, Configuration, EmitterInfo, Event, Flux, SourceCommand,
+            SourceEvent, SourceInfo,
         },
         runtime::remote::RemoteRuntime,
         Identifier,
@@ -77,6 +78,33 @@ pub mod remote {
                 Event::Source(SourceEvent::Display(config, flux)) => Ok((config, flux)),
                 _ => Err(crate::Error::UnexpectedResponse),
             }
+        }
+
+        /// Fetch information about a specific emitter by index.
+        async fn emitter_info(&self, index: u32) -> Result<EmitterInfo, crate::Error> {
+            let command = Command::Source(SourceCommand::EmitterInfo(index));
+            let command_message = CommandMessage::root(command, Some(self.identifier()));
+
+            let event_message = self.remote.execute_command(command_message).await?;
+
+            match event_message.event {
+                Event::Source(SourceEvent::EmitterInfo(info)) => Ok(info),
+                _ => Err(crate::Error::UnexpectedResponse),
+            }
+        }
+
+        /// Discover and create RemoteEmitter objects for all emitters on this source.
+        pub async fn emitters(&self) -> Result<Vec<RemoteEmitter>, crate::Error> {
+            let count = self.emitter_count().await?;
+            let mut emitters = Vec::with_capacity(count as usize);
+
+            for i in 0..count {
+                let info = self.emitter_info(i).await?;
+                let emitter = RemoteEmitter::new(info, self.remote.clone());
+                emitters.push(emitter);
+            }
+
+            Ok(emitters)
         }
     }
 }
