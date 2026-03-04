@@ -16,13 +16,17 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(1);
 const FIRMWARE_FLASH_OFFSET: u32 = 0x0002_0000;
 
 #[derive(Clone)]
-struct EP01UpdateTarget {
+pub struct EP01UpdateTarget {
     info: HostInfo,
     ports: Vec<(String, serialport::UsbPortInfo)>,
 }
 
 impl EP01UpdateTarget {
-    async fn attached() -> Vec<Self> {
+    pub fn info(&self) -> &HostInfo {
+        &self.info
+    }
+
+    pub async fn attached() -> Vec<Self> {
         // find all available ESP32-C6 serial devices
         let Ok(matches) = SerialPortBackend::attached_ports() else {
             return vec![];
@@ -86,7 +90,7 @@ impl EP01UpdateTarget {
         sorted[0].clone()
     }
 
-    fn flash_firmware_image(&self, firmware_path: &Path) -> Result<(), Error> {
+    pub fn flash_firmware_image(&self, firmware_path: &Path) -> Result<(), Error> {
         use espflash::cli::EspflashProgress;
         use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
         use espflash::flasher::Flasher;
