@@ -148,15 +148,46 @@ impl UsbEnvironment {
                 }
             };
 
+            // a tokio runtime handle is needed for connection servicing
+            let handle = match tokio::runtime::Handle::try_current() {
+                Ok(h) => h,
+                Err(e) => {
+                    log::warn!("tokio runtime required: {e}");
+                    continue;
+                }
+            };
+
             for device in devices {
                 let connection_key = device.connection_key();
-                let serial_number = device.serial_number();
-                if let Some(serial_number_ref) = serial_number.as_ref() {
-                    if !attached_serials.insert(serial_number_ref.clone()) {
+
+                // attempt to fetch serial number before connection, some backends allow this
+                let mut serial_number = device.serial_number();
+
+                // if the fetch failed, connect using the tokio handle and try again
+                if serial_number.is_none() {
+                    if let Err(e) =
+                        tokio::task::block_in_place(|| handle.block_on(device.connect()))
+                    {
+                        log::warn!("Failed to connect to discovered runtime: {:?}", e);
+                        continue;
+                    }
+                    serial_number = device.serial_number();
+                }
+
+                // check for existing connection
+                if let Some(ref sn) = serial_number {
+                    if !attached_serials.insert(sn.clone()) {
+                        // disconnect if connection was established
+                        if device.is_connected() {
+                            let _ = tokio::task::block_in_place(|| {
+                                handle.block_on(device.disconnect())
+                            });
+                        }
                         continue;
                     }
                 }
 
+                // establish a RemoteRuntime connection
                 let runtime = RemoteRuntime::new(device);
                 match Self::connect_runtime(&runtime) {
                     Ok(()) => connected_runtimes.push(ConnectedRuntime {
@@ -164,7 +195,7 @@ impl UsbEnvironment {
                         connection_key,
                         serial_number,
                     }),
-                    Err(e) => log::warn!("Failed to connect to discovered runtime: {:?}", e),
+                    Err(e) => log::warn!("Failed to initialize runtime: {:?}", e),
                 }
             }
         }
@@ -185,29 +216,38 @@ impl UsbEnvironment {
         device: Box<dyn UsbDevice>,
     ) -> Option<EnvironmentRuntimeEvent> {
         let connection_key = device.connection_key();
-        let serial_number = device.serial_number();
 
-        {
-            let connected_guard = connected_runtimes.lock().unwrap();
-            if Self::connected_contains_key(&connected_guard, &connection_key, &serial_number) {
+        // attempt to fetch serial number before connection, some backends allow this
+        let mut serial_number = device.serial_number();
+
+        // if the fetch failed, connect and try again
+        if serial_number.is_none() {
+            if let Err(e) = device.connect().await {
+                log::warn!("Failed to connect to discovered runtime: {:?}", e);
                 return None;
             }
+            serial_number = device.serial_number();
         }
 
-        let runtime = RemoteRuntime::new(device);
-        if let Err(e) = runtime.connect().await {
-            log::warn!("Failed to connect to discovered runtime: {:?}", e);
-            return None;
-        }
-
-        let duplicate = {
+        // check for existing connection
+        let duplicate_connection = {
             let connected_guard = connected_runtimes.lock().unwrap();
             Self::connected_contains_key(&connected_guard, &connection_key, &serial_number)
         };
-        if duplicate {
-            if let Err(e) = runtime.disconnect().await {
-                log::warn!("Failed to disconnect duplicate discovered runtime: {:?}", e);
+
+        if duplicate_connection {
+            if device.is_connected() {
+                if let Err(e) = device.disconnect().await {
+                    log::warn!("Failed to disconnect duplicate discovered runtime: {:?}", e);
+                }
             }
+            return None;
+        }
+
+        // establish a RemoteRuntime connection
+        let runtime = RemoteRuntime::new(device);
+        if let Err(e) = runtime.connect().await {
+            log::warn!("Failed to initialize runtime dispatch: {:?}", e);
             return None;
         }
 

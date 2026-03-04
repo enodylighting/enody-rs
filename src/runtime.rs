@@ -308,8 +308,7 @@ pub mod remote {
 
         /// Create a RemoteHost by querying the device for its host information.
         pub async fn host(&self) -> Result<RemoteHost, crate::Error> {
-            // RemoteHost::from_runtime(self.clone()).await
-            Err(crate::Error::Debug("build testing".into()))
+            RemoteHost::from_runtime(self.clone()).await
         }
 
         /// Get a reference to the underlying connection.
