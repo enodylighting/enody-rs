@@ -35,6 +35,16 @@ pub struct Version {
     patch: u16,
 }
 
+impl Version {
+    pub fn new(major: u8, minor: u8, patch: u16) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+}
+
 impl core::fmt::Display for Version {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
@@ -203,6 +213,12 @@ pub enum EmitterEvent {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EmitterInfo {
     identifier: Identifier,
+}
+
+impl EmitterInfo {
+    pub fn new(identifier: Identifier) -> Self {
+        Self { identifier }
+    }
 }
 
 impl EmitterInfo {
