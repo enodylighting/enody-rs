@@ -1,5 +1,6 @@
 use crate::{
     environment::Environment,
+    host::remote::RemoteHost,
     message::HostInfo,
     runtime::remote::RemoteRuntime,
     usb::serialport::{SerialPortBackend, SerialPortDevice},
@@ -22,61 +23,102 @@ pub struct EP01UpdateTarget {
 }
 
 impl EP01UpdateTarget {
-    pub fn info(&self) -> &HostInfo {
-        &self.info
-    }
-
-    pub async fn attached() -> Vec<Self> {
-        // find all available ESP32-C6 serial devices
+    /// Discover attached devices without querying firmware. Uses the USB
+    /// serial number (MAC address) to deduplicate ports belonging to the same
+    /// physical device. Returns targets with a nil host UUID and zero
+    /// version — useful when firmware is broken and cannot respond to
+    /// HostInfo queries.
+    pub fn attached_raw() -> Vec<Self> {
         let Ok(matches) = SerialPortBackend::attached_ports() else {
             return vec![];
         };
 
-        // query each device for a HostInfo
         let mut hosts = Vec::<Self>::new();
         for (port_name, port_info) in matches {
-            let device =
-                SerialPortDevice::new(port_name.to_string(), port_info.serial_number.clone());
-            let runtime = RemoteRuntime::new(Box::new(device));
-            if runtime.connect().await.is_err() {
-                log::warn!(
-                    "failed to connect to deivce: {:?}",
-                    port_info.serial_number.clone()
-                );
-                continue;
-            }
+            let serial = port_info.serial_number.as_deref();
 
-            // attempt to connect and fetch HostInfo
-            let Ok(Ok(host)) = tokio::time::timeout(CONNECTION_TIMEOUT, runtime.host()).await
-            else {
-                log::warn!(
-                    "failed to collect HostInfo from device: {:?}",
-                    port_info.serial_number.clone()
-                );
-                continue;
-            };
-            let _ = runtime.disconnect().await;
-
-            // check if host is already present on another port
-            let host_info = HostInfo {
-                version: host.version(),
-                identifier: host.identifier(),
-            };
-
-            if let Some(existing) = hosts
-                .iter_mut()
-                .find(|host| host.info.identifier == host_info.identifier)
-            {
+            if let Some(existing) = serial.and_then(|sn| {
+                hosts.iter_mut().find(|h| {
+                    h.ports
+                        .iter()
+                        .any(|(_, pi)| pi.serial_number.as_deref() == Some(sn))
+                })
+            }) {
                 existing.ports.push((port_name, port_info));
-            } else {
-                hosts.push(EP01UpdateTarget {
-                    info: host_info,
-                    ports: vec![(port_name, port_info)],
-                });
+                continue;
             }
+
+            let info = HostInfo {
+                version: crate::message::Version::new(0, 0, 0),
+                identifier: Identifier::nil(),
+            };
+            hosts.push(EP01UpdateTarget {
+                info,
+                ports: vec![(port_name, port_info)],
+            });
         }
 
         hosts
+    }
+
+    /// Discover attached devices and query each for its HostInfo.
+    ///
+    /// Calls [`attached_raw`](Self::attached_raw) to enumerate and
+    /// deduplicate by serial number, then connects to each target to
+    /// retrieve the firmware-reported host identifier and version.
+    /// Targets that fail to respond retain the nil/zero defaults from
+    /// `attached_raw`.
+    pub async fn attached() -> Vec<Self> {
+        let mut targets = Self::attached_raw();
+
+        for target in &mut targets {
+            let Some((port_name, port_info)) = target.ports.first() else {
+                continue;
+            };
+
+            let device = SerialPortDevice::new(port_name.clone(), port_info.serial_number.clone());
+            let runtime = RemoteRuntime::new(Box::new(device));
+            if runtime.connect().await.is_err() {
+                log::warn!("failed to connect to device: {:?}", port_info.serial_number);
+                continue;
+            }
+
+            let host_result = tokio::time::timeout(
+                CONNECTION_TIMEOUT,
+                RemoteHost::from_runtime(runtime.clone()),
+            )
+            .await;
+
+            let _ = runtime.disconnect().await;
+
+            match host_result {
+                Ok(Ok(host)) => {
+                    target.info = HostInfo {
+                        version: host.version(),
+                        identifier: host.identifier(),
+                    };
+                }
+                _ => {
+                    log::warn!(
+                        "failed to collect HostInfo from device: {:?}",
+                        port_info.serial_number
+                    );
+                }
+            }
+        }
+
+        targets
+    }
+
+    pub fn info(&self) -> &HostInfo {
+        &self.info
+    }
+
+    /// USB serial number of the device, on EP01 this is the ESP32-C6 MAC address
+    pub fn mac_address(&self) -> Option<&str> {
+        self.ports
+            .first()
+            .and_then(|(_, pi)| pi.serial_number.as_deref())
     }
 
     fn preferred_port(&self) -> (String, serialport::UsbPortInfo) {
