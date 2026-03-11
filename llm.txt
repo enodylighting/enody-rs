@@ -95,7 +95,7 @@ The generic `InternalCommand`/`InternalEvent` parameters allow `enody-internal` 
 
 ### Key message types
 
-- `Configuration` — `Flux`, `Blackbody(cct)`, `Chromatic(x, y)`, `Spectral`, `Manual`
+- `Configuration` — `Flux`, `Blackbody(cct)`, `Chromatic(x, y)`, `Spectral`, `Manual` (use per-emitter flux values set via `emitter.set_flux()`)
 - `Flux` — `Relative(f32)` (0.0 to 1.0)
 - `HostInfo` — `version: Version`, `identifier: Identifier`
 - `FixtureInfo` — `identifier: Identifier`
@@ -153,6 +153,14 @@ source.display(
     Configuration::Chromatic(Chromaticity { x: 0.3127, y: 0.3290 }),
     Flux::Relative(1.0),
 ).await?;
+
+// Individual emitter control requires two steps:
+// 1. Set flux on each emitter directly
+emitter.set_flux(Flux::Relative(0.8)).await?;
+// 2. Apply with Configuration::Manual on the parent fixture
+//    Manual tells the fixture to use per-emitter flux values as-is
+//    rather than computing them from Blackbody/Chromatic/etc.
+fixture.display(Configuration::Manual, Flux::Relative(1.0)).await?;
 ```
 
 ## Design Principles

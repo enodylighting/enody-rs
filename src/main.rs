@@ -107,6 +107,24 @@ enum Commands {
         rate: f32,
     },
 
+    /// Scan each emitter individually, activating one at a time
+    Scan {
+        /// Relative flux for each emitter (0.0 to 1.0, default: 0.5)
+        #[arg(short, long, default_value_t = 0.5)]
+        flux: f32,
+
+        /// Duration each emitter is held on, in milliseconds (default: 200)
+        #[arg(short, long, default_value_t = 200)]
+        duration: u64,
+    },
+
+    /// Download spectral data from all emitters and save as JSON
+    DownloadSpectralData {
+        /// Output file path
+        #[arg(short, long, default_value = "spectral-data.json")]
+        output: String,
+    },
+
     /// Update selected device to newest firmware
     Update {
         /// Path to an offline firmware image (.bin)
@@ -156,6 +174,8 @@ async fn main() -> Result<(), enody::Error> {
             )
             .await?
         }
+        Commands::Scan { flux, duration } => scan(flux, duration).await?,
+        Commands::DownloadSpectralData { output } => download_spectral_data(&output).await?,
         Commands::Update { firmware } => enody::update::update_remote_host(firmware).await?,
     }
 
@@ -420,6 +440,180 @@ async fn set_chromaticity(x: f32, y: f32, flux: f32, verbose: bool) -> Result<()
         }
     }
 
+    Ok(())
+}
+
+async fn scan(flux: f32, duration_ms: u64) -> Result<(), enody::Error> {
+    use enody::message::{Configuration, Flux};
+    use std::time::Duration;
+
+    let environment = UsbEnvironment::new();
+    let runtimes = environment.runtimes();
+
+    if runtimes.is_empty() {
+        println!("No Enody devices found.");
+        return Ok(());
+    }
+
+    // Collect all (fixture, emitter_label, emitter) tuples across all devices
+    let mut scan_entries = Vec::new();
+
+    for runtime in &runtimes {
+        let Ok(host) = runtime.host().await else {
+            println!("Failed to query host");
+            continue;
+        };
+        println!("Host: {} (v{})", host.identifier(), host.version());
+
+        let Ok(fixtures) = host.fixtures().await else {
+            println!("  Failed to discover fixtures");
+            continue;
+        };
+
+        for (fi, fixture) in fixtures.into_iter().enumerate() {
+            println!("Fixture {}: {}", fi, fixture.identifier());
+
+            let Ok(sources) = fixture.sources().await else {
+                println!("  Failed to discover sources");
+                continue;
+            };
+
+            for (si, source) in sources.iter().enumerate() {
+                println!("  Source {}: {}", si, source.identifier());
+
+                let Ok(emitters) = source.emitters().await else {
+                    println!("    Failed to discover emitters");
+                    continue;
+                };
+
+                for (ei, emitter) in emitters.into_iter().enumerate() {
+                    let label = format!("F{}S{}E{}", fi, si, ei);
+                    println!("    Emitter {} ({}): {}", ei, label, emitter.identifier());
+                    scan_entries.push((fixture.clone(), label, emitter));
+                }
+            }
+        }
+    }
+
+    println!(
+        "\nScanning {} emitters (flux {:.2} / {}ms each)...\n",
+        scan_entries.len(),
+        flux,
+        duration_ms,
+    );
+
+    let flux_on = Flux::Relative(flux);
+    let flux_off = Flux::Relative(0.0);
+
+    for (fixture, label, emitter) in &scan_entries {
+        print!("  {} ({})... ", label, emitter.identifier());
+
+        emitter.set_flux(flux_on.clone()).await?;
+        fixture
+            .display(Configuration::Manual, Flux::Relative(0.5))
+            .await?;
+
+        tokio::time::sleep(Duration::from_millis(duration_ms)).await;
+
+        emitter.set_flux(flux_off.clone()).await?;
+        fixture
+            .display(Configuration::Manual, Flux::Relative(0.5))
+            .await?;
+
+        println!("done");
+    }
+
+    println!("\nScan complete.");
+    Ok(())
+}
+
+async fn download_spectral_data(output_path: &str) -> Result<(), enody::Error> {
+    use enody::spectral::{
+        EmitterSpectralData, FixtureSpectralData, HostSpectralData, SourceSpectralData,
+    };
+
+    let environment = UsbEnvironment::new();
+    let runtimes = environment.runtimes();
+
+    if runtimes.is_empty() {
+        println!("No Enody devices found.");
+        return Ok(());
+    }
+
+    // Use the first runtime
+    let runtime = &runtimes[0];
+    let Ok(host) = runtime.host().await else {
+        println!("Failed to query host");
+        return Ok(());
+    };
+    println!("Host: {} (v{})", host.identifier(), host.version());
+
+    let Ok(fixtures) = host.fixtures().await else {
+        println!("Failed to discover fixtures");
+        return Ok(());
+    };
+    println!("Fixtures: {}", fixtures.len());
+
+    let mut fixture_outputs = Vec::new();
+
+    for (fi, fixture) in fixtures.iter().enumerate() {
+        println!("  Fixture {}: {}", fi, fixture.identifier());
+
+        let Ok(sources) = fixture.sources().await else {
+            println!("    Failed to discover sources");
+            continue;
+        };
+        println!("    Sources: {}", sources.len());
+
+        let mut source_outputs = Vec::new();
+
+        for (si, source) in sources.iter().enumerate() {
+            println!("    Source {}: {}", si, source.identifier());
+
+            let Ok(emitters) = source.emitters().await else {
+                println!("      Failed to discover emitters");
+                continue;
+            };
+            println!("      Emitters: {}", emitters.len());
+
+            let mut emitter_outputs = Vec::new();
+
+            for (ei, emitter) in emitters.iter().enumerate() {
+                println!("      Emitter {}: {}", ei, emitter.identifier());
+
+                let spectral_data = emitter.spectral_data().await?;
+                println!("        Samples: {}", spectral_data.samples().len());
+
+                emitter_outputs.push(EmitterSpectralData {
+                    identifier: emitter.identifier(),
+                    spectral_data,
+                });
+            }
+
+            source_outputs.push(SourceSpectralData {
+                identifier: source.identifier(),
+                emitters: emitter_outputs,
+            });
+        }
+
+        fixture_outputs.push(FixtureSpectralData {
+            identifier: fixture.identifier(),
+            sources: source_outputs,
+        });
+    }
+
+    let output = HostSpectralData {
+        host: host.info().clone(),
+        fixtures: fixture_outputs,
+    };
+
+    let json = serde_json::to_string_pretty(&output)
+        .map_err(|e| enody::Error::Debug(format!("JSON serialization failed: {}", e)))?;
+
+    std::fs::write(output_path, &json)
+        .map_err(|e| enody::Error::Debug(format!("Failed to write {}: {}", output_path, e)))?;
+
+    println!("Spectral data written to {}", output_path);
     Ok(())
 }
 

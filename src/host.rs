@@ -60,6 +60,11 @@ pub mod remote {
             Self { info, remote }
         }
 
+        /// Get the host info.
+        pub fn info(&self) -> &HostInfo {
+            &self.info
+        }
+
         /// Get the host identifier.
         pub fn identifier(&self) -> Identifier {
             self.info.identifier
