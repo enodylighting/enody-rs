@@ -10,7 +10,7 @@ readme = "README.md"
 [features]
 default = ["remote", "cli"]
 std = ["postcard/use-std", "serde/std"]
-remote = ["std", "env_logger", "tokio", "rusb", "serialport", "espflash"]
+remote = ["std", "env_logger", "tokio", "rusb", "serialport", "espflash", "reqwest", "sha2"]
 cli = ["clap", "serde_json"]
 
 [[bin]]
@@ -33,3 +33,5 @@ env_logger  = { version = "0.11.8", optional = true }
 tokio       = { version = "1.44.2", features = ["full"], optional = true }
 serialport  = { version = "4.6.0", optional = true }
 espflash    = { git = "https://github.com/esp-rs/espflash.git", rev = "4b0cb41", package = "espflash", optional = true }
+reqwest     = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
+sha2        = { version = "0.10", optional = true }

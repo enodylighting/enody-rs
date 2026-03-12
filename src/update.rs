@@ -1,12 +1,13 @@
 use crate::{
     environment::Environment,
     host::remote::RemoteHost,
-    message::HostInfo,
+    message::{HostInfo, Version},
     runtime::remote::RemoteRuntime,
     usb::serialport::{SerialPortBackend, SerialPortDevice},
     usb::UsbEnvironment,
     Error, Identifier,
 };
+use serde::Deserialize;
 use std::{
     io::{self, Write as _},
     path::{Path, PathBuf},
@@ -15,6 +16,26 @@ use std::{
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(1);
 const FIRMWARE_FLASH_OFFSET: u32 = 0x0002_0000;
+const FIRMWARE_BASE_URL: &str = "https://firmware.enody.lighting";
+
+#[derive(Clone, Debug, Deserialize)]
+struct FirmwarePayload {
+    offset: u32,
+    length: u32,
+    data: String,
+    sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct FirmwareVersion {
+    version: String,
+    payload: Vec<FirmwarePayload>,
+}
+
+enum ResolvedFirmware {
+    LocalFile(PathBuf),
+    Payloads(Vec<(u32, Vec<u8>)>),
+}
 
 #[derive(Clone)]
 pub struct EP01UpdateTarget {
@@ -133,6 +154,16 @@ impl EP01UpdateTarget {
     }
 
     pub fn flash_firmware_image(&self, firmware_path: &Path) -> Result<(), Error> {
+        let image = std::fs::read(firmware_path).map_err(|e| {
+            Error::Debug(format!(
+                "Failed to read firmware image {}: {e}",
+                firmware_path.display()
+            ))
+        })?;
+        self.flash_payloads(&[(FIRMWARE_FLASH_OFFSET, image)])
+    }
+
+    pub fn flash_payloads(&self, payloads: &[(u32, Vec<u8>)]) -> Result<(), Error> {
         use espflash::cli::EspflashProgress;
         use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
         use espflash::flasher::Flasher;
@@ -140,13 +171,6 @@ impl EP01UpdateTarget {
         use serialport::FlowControl;
 
         let (port_name, port_info) = self.preferred_port();
-
-        let image = std::fs::read(firmware_path).map_err(|e| {
-            Error::Debug(format!(
-                "Failed to read firmware image {}: {e}",
-                firmware_path.display()
-            ))
-        })?;
 
         let serial = serialport::new(&port_name, 115_200)
             .flow_control(FlowControl::None)
@@ -172,9 +196,18 @@ impl EP01UpdateTarget {
 
         let mut progress = EspflashProgress::default();
 
-        flasher
-            .write_bin_to_flash(FIRMWARE_FLASH_OFFSET, &image, &mut progress)
-            .map_err(|e| Error::Debug(format!("Failed to flash firmware: {:?}", e)))?;
+        for (i, (offset, data)) in payloads.iter().enumerate() {
+            println!(
+                "  Writing payload {}/{} ({} bytes at offset {:#x})...",
+                i + 1,
+                payloads.len(),
+                data.len(),
+                offset
+            );
+            flasher
+                .write_bin_to_flash(*offset, data, &mut progress)
+                .map_err(|e| Error::Debug(format!("Failed to flash firmware: {:?}", e)))?;
+        }
 
         Ok(())
     }
@@ -215,28 +248,213 @@ impl EP01UpdateTarget {
     }
 }
 
-fn firmware_path(host_identifier: Identifier, firmware: Option<PathBuf>) -> Result<PathBuf, Error> {
-    let Some(path) = firmware else {
-        return Err(Error::Debug(format!(
-            "Firmware download backend is not yet implemented for host {}. Supply --firmware <FILE>.",
-            host_identifier
-        )));
-    };
+async fn fetch_firmware_manifest(host_id: &Identifier) -> Result<Vec<FirmwareVersion>, Error> {
+    let url = format!("{}/{}/firmware.json", FIRMWARE_BASE_URL, host_id);
+    println!("Fetching firmware manifest for {}...", host_id);
 
-    let absolute_path = std::fs::canonicalize(&path).map_err(|e| {
-        Error::Debug(format!(
-            "Failed to resolve firmware image path {}: {e}",
-            path.display()
-        ))
+    let response = reqwest::get(&url).await.map_err(|e| {
+        log::debug!("Firmware manifest fetch error: {e}");
+        Error::Debug(format!("Failed to fetch firmware manifest from {url}"))
     })?;
-    if !absolute_path.is_file() {
+
+    if !response.status().is_success() {
+        log::debug!("Firmware manifest status {}: {url}", response.status());
         return Err(Error::Debug(format!(
-            "Firmware image path is not a file: {}",
-            absolute_path.display()
+            "Failed to fetch firmware manifest from {url}"
         )));
     }
 
-    Ok(absolute_path)
+    let versions: Vec<FirmwareVersion> = response.json().await.map_err(|e| {
+        log::debug!("Firmware manifest parse error: {e}");
+        Error::Debug(format!("Failed to parse firmware manifest from {url}"))
+    })?;
+
+    Ok(versions)
+}
+
+async fn download_payload(
+    host_id: &Identifier,
+    payload: &FirmwarePayload,
+) -> Result<Vec<u8>, Error> {
+    let url = format!("{}/{}/{}", FIRMWARE_BASE_URL, host_id, payload.data);
+    let response = reqwest::get(&url).await.map_err(|e| {
+        log::debug!("Payload download error for {}: {e}", payload.data);
+        Error::Debug(format!("Failed to download payload {}", payload.data))
+    })?;
+
+    if !response.status().is_success() {
+        log::debug!(
+            "Payload download status {} for {}",
+            response.status(),
+            payload.data
+        );
+        return Err(Error::Debug(format!(
+            "Failed to download payload {}",
+            payload.data
+        )));
+    }
+
+    let data = response.bytes().await.map_err(|e| {
+        log::debug!("Payload read error for {}: {e}", payload.data);
+        Error::Debug(format!("Failed to download payload {}", payload.data))
+    })?;
+
+    if data.len() as u32 != payload.length {
+        return Err(Error::Debug(format!(
+            "Payload {} size mismatch: expected {} bytes, got {}",
+            payload.data,
+            payload.length,
+            data.len()
+        )));
+    }
+
+    use sha2::{Digest, Sha256};
+    let hash = format!("{:x}", Sha256::digest(&data));
+    if hash != payload.sha256 {
+        return Err(Error::Debug(format!(
+            "Payload {} SHA-256 mismatch: expected {}, got {}",
+            payload.data, payload.sha256, hash
+        )));
+    }
+
+    Ok(data.to_vec())
+}
+
+async fn download_firmware_payloads(
+    host_id: &Identifier,
+    version: &FirmwareVersion,
+) -> Result<Vec<(u32, Vec<u8>)>, Error> {
+    let mut payloads = Vec::new();
+    let total = version.payload.len();
+
+    for (i, fw_payload) in version.payload.iter().enumerate() {
+        println!(
+            "  Downloading payload {}/{}: {} ({} bytes)...",
+            i + 1,
+            total,
+            fw_payload.data,
+            fw_payload.length
+        );
+        let data = download_payload(host_id, fw_payload).await?;
+        payloads.push((fw_payload.offset, data));
+    }
+
+    Ok(payloads)
+}
+
+fn select_firmware_version(
+    versions: &[FirmwareVersion],
+    current_version: &Version,
+) -> Result<usize, Error> {
+    if versions.is_empty() {
+        return Err(Error::Debug("No firmware versions available.".into()));
+    }
+
+    // Parse and sort indices by version, newest first
+    let mut indexed: Vec<(usize, Version)> = versions
+        .iter()
+        .enumerate()
+        .filter_map(|(i, fv)| fv.version.parse::<Version>().ok().map(|v| (i, v)))
+        .collect();
+    indexed.sort_by(|a, b| b.1.cmp(&a.1));
+
+    if indexed.is_empty() {
+        return Err(Error::Debug(
+            "No firmware versions with valid semver found.".into(),
+        ));
+    }
+
+    let recommended_version = &indexed[0].1;
+
+    println!("Available firmware versions:");
+    for (display_idx, (orig_idx, ver)) in indexed.iter().enumerate() {
+        let mut markers = Vec::new();
+        if ver == recommended_version {
+            markers.push("recommended");
+        }
+        if ver == current_version {
+            markers.push("current");
+        }
+        let marker_str = if markers.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", markers.join(", "))
+        };
+        println!(
+            "  {}. {}{}",
+            display_idx + 1,
+            versions[*orig_idx].version,
+            marker_str
+        );
+    }
+
+    let range = if indexed.len() > 1 {
+        format!(" [1-{}, default: 1]", indexed.len())
+    } else {
+        " [default: 1]".into()
+    };
+    print!("Select version{}: ", range);
+    io::stdout()
+        .flush()
+        .map_err(|e| Error::Debug(format!("Failed to flush stdout: {e}")))?;
+
+    let mut line = String::new();
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| Error::Debug(format!("Failed to read version selection: {e}")))?;
+
+    let trimmed = line.trim();
+    let selection = if trimmed.is_empty() {
+        1
+    } else {
+        trimmed.parse::<usize>().map_err(|_| {
+            Error::Debug(format!(
+                "Invalid selection '{}'. Expected a number between 1 and {}.",
+                trimmed,
+                indexed.len()
+            ))
+        })?
+    };
+
+    if selection < 1 || selection > indexed.len() {
+        return Err(Error::Debug(format!(
+            "Selection {} is out of range. Expected 1..={}.",
+            selection,
+            indexed.len()
+        )));
+    }
+
+    Ok(indexed[selection - 1].0)
+}
+
+async fn resolve_firmware(
+    host_identifier: Identifier,
+    current_version: &Version,
+    firmware: Option<PathBuf>,
+) -> Result<ResolvedFirmware, Error> {
+    if let Some(path) = firmware {
+        let absolute_path = std::fs::canonicalize(&path).map_err(|e| {
+            Error::Debug(format!(
+                "Failed to resolve firmware image path {}: {e}",
+                path.display()
+            ))
+        })?;
+        if !absolute_path.is_file() {
+            return Err(Error::Debug(format!(
+                "Firmware image path is not a file: {}",
+                absolute_path.display()
+            )));
+        }
+        return Ok(ResolvedFirmware::LocalFile(absolute_path));
+    }
+
+    let versions = fetch_firmware_manifest(&host_identifier).await?;
+    let selected_idx = select_firmware_version(&versions, current_version)?;
+    let selected = &versions[selected_idx];
+
+    println!("Downloading firmware version {}...", selected.version);
+    let payloads = download_firmware_payloads(&host_identifier, selected).await?;
+    Ok(ResolvedFirmware::Payloads(payloads))
 }
 
 fn select_update_target(mut hosts: Vec<EP01UpdateTarget>) -> Result<EP01UpdateTarget, Error> {
@@ -297,17 +515,32 @@ pub async fn update_remote_host(firmware: Option<PathBuf>) -> Result<(), Error> 
     let selected_host = select_update_target(hosts)?;
     let host_info = selected_host.info.clone();
     let host_identifier = host_info.identifier;
-    let current_version = host_info.version.to_string();
+    let current_version = &host_info.version;
     println!(
         "Updating host {} (current version {}).",
         host_identifier, current_version
     );
 
-    let firmware_path = firmware_path(host_identifier, firmware)?;
-    println!("Using firmware image {}.", firmware_path.display());
+    let resolved = match resolve_firmware(host_identifier, current_version, firmware).await {
+        Ok(r) => r,
+        Err(e) => {
+            log::debug!("Firmware resolution failed: {:?}", e);
+            println!("Encountered error fetching firmware.");
+            std::process::exit(1);
+        }
+    };
 
-    println!("Flashing selected device...");
-    selected_host.flash_firmware_image(&firmware_path)?;
+    match &resolved {
+        ResolvedFirmware::LocalFile(path) => {
+            println!("Using firmware image {}.", path.display());
+            println!("Flashing selected device...");
+            selected_host.flash_firmware_image(path)?;
+        }
+        ResolvedFirmware::Payloads(payloads) => {
+            println!("Flashing {} payload(s)...", payloads.len());
+            selected_host.flash_payloads(payloads)?;
+        }
+    }
 
     println!("Flash complete. Verifying update...");
     selected_host.verify_updated_host().await?;

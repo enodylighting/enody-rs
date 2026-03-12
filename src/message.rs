@@ -28,7 +28,7 @@ pub enum Configuration {
     Manual,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 pub struct Version {
     major: u8,
     minor: u8,
@@ -48,6 +48,37 @@ impl Version {
 impl core::fmt::Display for Version {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl core::str::FromStr for Version {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.split('.');
+        let major = parts
+            .next()
+            .ok_or("missing major")?
+            .parse::<u8>()
+            .map_err(|_| "invalid major")?;
+        let minor = parts
+            .next()
+            .ok_or("missing minor")?
+            .parse::<u8>()
+            .map_err(|_| "invalid minor")?;
+        let patch = parts
+            .next()
+            .ok_or("missing patch")?
+            .parse::<u16>()
+            .map_err(|_| "invalid patch")?;
+        if parts.next().is_some() {
+            return Err("too many version parts");
+        }
+        Ok(Self {
+            major,
+            minor,
+            patch,
+        })
     }
 }
 
