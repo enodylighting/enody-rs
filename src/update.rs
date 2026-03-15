@@ -27,9 +27,15 @@ struct FirmwarePayload {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct FirmwareVersion {
+pub struct FirmwareVersion {
     version: String,
     payload: Vec<FirmwarePayload>,
+}
+
+impl FirmwareVersion {
+    pub fn version(&self) -> &str {
+        &self.version
+    }
 }
 
 enum ResolvedFirmware {
@@ -37,7 +43,7 @@ enum ResolvedFirmware {
     Payloads(Vec<(u32, Vec<u8>)>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct EP01UpdateTarget {
     info: HostInfo,
     ports: Vec<(String, serialport::UsbPortInfo)>,
@@ -56,27 +62,34 @@ impl EP01UpdateTarget {
 
         let mut hosts = Vec::<Self>::new();
         for (port_name, port_info) in matches {
-            let serial = port_info.serial_number.as_deref();
-
-            if let Some(existing) = serial.and_then(|sn| {
-                hosts.iter_mut().find(|h| {
-                    h.ports
-                        .iter()
-                        .any(|(_, pi)| pi.serial_number.as_deref() == Some(sn))
-                })
-            }) {
-                existing.ports.push((port_name, port_info));
+            // if we cannot get a valid serialnumber the USB device is not
+            // reliable enough to attempt update
+            let Some(serial) = port_info.serial_number.as_deref() else {
                 continue;
+            };
+
+            // determine if the host already exists
+            let mut existing_host = None;
+            for host in hosts.iter_mut() {
+                for (_, port_info) in &mut host.ports {
+                    if Some(serial.into()) == port_info.serial_number {
+                        existing_host = Some(host);
+                        break;
+                    }
+                }
+                if existing_host.is_some() {
+                    break;
+                }
             }
 
-            let info = HostInfo {
-                version: crate::message::Version::new(0, 0, 0),
-                identifier: Identifier::nil(),
-            };
-            hosts.push(EP01UpdateTarget {
-                info,
-                ports: vec![(port_name, port_info)],
-            });
+            // if the host doesn't exist, add to vec
+            if existing_host.is_none() {
+                hosts.push(EP01UpdateTarget::default());
+                existing_host = hosts.last_mut();
+            }
+
+            // add the port
+            existing_host.unwrap().ports.push((port_name, port_info));
         }
 
         hosts
@@ -212,7 +225,32 @@ impl EP01UpdateTarget {
         Ok(())
     }
 
-    async fn verify_updated_host(&self) -> Result<(), Error> {
+    pub async fn available_firmware(&self) -> Result<Vec<FirmwareVersion>, Error> {
+        fetch_firmware_manifest(&self.info.identifier).await
+    }
+
+    pub async fn update_available(&self) -> Result<bool, Error> {
+        let versions = fetch_firmware_manifest(&self.info.identifier).await?;
+        let current = &self.info.version;
+        Ok(versions.iter().any(|fv| {
+            fv.version
+                .parse::<Version>()
+                .map_or(false, |v| v > *current)
+        }))
+    }
+
+    pub async fn update_device(&self, version: &str) -> Result<(), Error> {
+        let versions = fetch_firmware_manifest(&self.info.identifier).await?;
+        let selected = versions
+            .iter()
+            .find(|fv| fv.version == version)
+            .ok_or_else(|| Error::Debug(format!("Version {} not found", version)))?;
+        let payloads = download_firmware_payloads(&self.info.identifier, selected).await?;
+        self.flash_payloads(&payloads)?;
+        self.verify_updated_host().await
+    }
+
+    pub async fn verify_updated_host(&self) -> Result<(), Error> {
         let timeout = Duration::from_secs(30);
         let interval = Duration::from_secs(3);
         let start = Instant::now();
@@ -248,7 +286,7 @@ impl EP01UpdateTarget {
     }
 }
 
-async fn fetch_firmware_manifest(host_id: &Identifier) -> Result<Vec<FirmwareVersion>, Error> {
+pub async fn fetch_firmware_manifest(host_id: &Identifier) -> Result<Vec<FirmwareVersion>, Error> {
     let url = format!("{}/{}/firmware.json", FIRMWARE_BASE_URL, host_id);
     println!("Fetching firmware manifest for {}...", host_id);
 

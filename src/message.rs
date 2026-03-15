@@ -177,7 +177,7 @@ pub enum HostEvent {
     FixtureInfo(FixtureInfo),
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct HostInfo {
     pub version: Version,
     pub identifier: Identifier,
