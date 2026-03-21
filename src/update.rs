@@ -222,6 +222,11 @@ impl EP01UpdateTarget {
                 .map_err(|e| Error::Debug(format!("Failed to flash firmware: {:?}", e)))?;
         }
 
+        flasher
+            .connection()
+            .reset()
+            .map_err(|e| Error::Debug(format!("Failed to reset device after flash: {:?}", e)))?;
+
         Ok(())
     }
 
