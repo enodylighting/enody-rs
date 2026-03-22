@@ -552,8 +552,38 @@ fn select_update_target(mut hosts: Vec<EP01UpdateTarget>) -> Result<EP01UpdateTa
     Ok(hosts.remove(selected_index))
 }
 
-pub async fn update_remote_host(firmware: Option<PathBuf>) -> Result<(), Error> {
+pub async fn update_remote_host(firmware: Option<PathBuf>, force: bool) -> Result<(), Error> {
     let hosts = EP01UpdateTarget::attached().await;
+
+    // Warn about unresponsive devices (nil identifier means HostInfo query failed)
+    let unresponsive: Vec<&EP01UpdateTarget> = hosts
+        .iter()
+        .filter(|h| h.info().identifier == Identifier::nil())
+        .collect();
+
+    if !unresponsive.is_empty() && !force {
+        println!("Warning: The following device(s) did not respond to host identification:");
+        for host in &unresponsive {
+            let mac = host.mac_address().unwrap_or("unknown");
+            println!("  - MAC address: {}", mac);
+        }
+        println!("Verify only EP01 devices are attached to this computer before force updating.");
+        print!("Continue? [y/N]: ");
+        io::stdout()
+            .flush()
+            .map_err(|e| Error::Debug(format!("Failed to flush stdout: {e}")))?;
+
+        let mut line = String::new();
+        io::stdin()
+            .read_line(&mut line)
+            .map_err(|e| Error::Debug(format!("Failed to read confirmation: {e}")))?;
+
+        let trimmed = line.trim();
+        if !trimmed.eq_ignore_ascii_case("y") {
+            println!("Update aborted.");
+            return Ok(());
+        }
+    }
 
     let selected_host = select_update_target(hosts)?;
     let host_info = selected_host.info.clone();

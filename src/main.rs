@@ -130,6 +130,9 @@ enum Commands {
         /// Path to an offline firmware image (.bin)
         #[arg(short, long, value_name = "FILE")]
         firmware: Option<PathBuf>,
+        /// Force update even if device does not respond to host identification
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -176,7 +179,9 @@ async fn main() -> Result<(), enody::Error> {
         }
         Commands::Scan { flux, duration } => scan(flux, duration).await?,
         Commands::DownloadSpectralData { output } => download_spectral_data(&output).await?,
-        Commands::Update { firmware } => enody::update::update_remote_host(firmware).await?,
+        Commands::Update { firmware, force } => {
+            enody::update::update_remote_host(firmware, force).await?
+        }
     }
 
     Ok(())
