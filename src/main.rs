@@ -537,6 +537,13 @@ async fn download_spectral_data(output_path: &str) -> Result<(), enody::Error> {
         EmitterSpectralData, FixtureSpectralData, HostSpectralData, SourceSpectralData,
     };
 
+    if std::path::Path::new(output_path).exists() {
+        return Err(enody::Error::Debug(format!(
+            "Output file already exists: {}",
+            output_path
+        )));
+    }
+
     let environment = UsbEnvironment::new();
     let runtimes = environment.runtimes();
 
