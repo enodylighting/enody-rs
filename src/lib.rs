@@ -39,4 +39,5 @@ pub enum Error {
     Busy,
     InsufficientData,
     UnexpectedResponse,
+    Timeout,
 }

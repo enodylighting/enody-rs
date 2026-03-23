@@ -237,51 +237,95 @@ pub mod remote {
 
         /// Execute a command and wait for its response event.
         ///
+        /// Default timeout for a single command attempt.
+        const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+        /// Maximum number of retry attempts for a command.
+        const COMMAND_MAX_RETRIES: u32 = 3;
+
         /// This method sends a command and blocks until the corresponding
         /// response event is received, matching by context identifier.
+        /// Retries automatically on timeout.
         pub async fn execute_command(
             &self,
             command: CommandMessage,
         ) -> Result<EventMessage, crate::Error> {
             let command_debug = format!("{:?}", command.command);
-            let context = command.identifier;
-            let (response_tx, response_rx) = oneshot::channel();
+            let original_command = command.command.clone();
+            let original_resource = command.resource;
 
-            // Register for the response
-            {
-                let mut pending = self.inner.pending_commands.lock().await;
-                pending.push(CommandResponseRegistration {
-                    context,
-                    response_tx: Some(response_tx),
-                });
-            }
+            for attempt in 0..=Self::COMMAND_MAX_RETRIES {
+                // Create a fresh command message for each attempt (new context UUID)
+                let attempt_command = if attempt == 0 {
+                    command.clone()
+                } else {
+                    log::debug!(
+                        "Retrying command {} (attempt {}/{})",
+                        command_debug,
+                        attempt + 1,
+                        Self::COMMAND_MAX_RETRIES + 1
+                    );
+                    // Small backoff before retry
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
+                    CommandMessage::root(original_command.clone(), original_resource)
+                };
 
-            // Send the command
-            let start = std::time::Instant::now();
-            let message = Message::Command(command);
-            if let Err(error) = self.inner.connection.send_message(message).await {
-                Self::remove_pending_registration(&self.inner, &context).await;
-                return Err(error);
-            }
+                let context = attempt_command.identifier;
+                let (response_tx, response_rx) = oneshot::channel();
 
-            // Wait for the response
-            let response = match response_rx.await {
-                Ok(response) => response,
-                Err(_) => {
-                    Self::remove_pending_registration(&self.inner, &context).await;
-                    return Err(crate::Error::Debug(
-                        "command response channel closed".to_string(),
-                    ));
+                // Register for the response
+                {
+                    let mut pending = self.inner.pending_commands.lock().await;
+                    pending.push(CommandResponseRegistration {
+                        context,
+                        response_tx: Some(response_tx),
+                    });
                 }
-            };
-            let elapsed = start.elapsed();
-            log::debug!(
-                "Command {} completed in {} ms (context={})",
-                command_debug,
-                (elapsed.as_micros() as f32 / 1000.0),
-                context
-            );
-            Ok(response)
+
+                // Send the command
+                let start = std::time::Instant::now();
+                log::trace!("Sending command {} (context={}, attempt={})", command_debug, context, attempt);
+                let message = Message::Command(attempt_command);
+                if let Err(error) = self.inner.connection.send_message(message).await {
+                    Self::remove_pending_registration(&self.inner, &context).await;
+                    return Err(error);
+                }
+                log::trace!("Command {} sent, awaiting response (context={})", command_debug, context);
+
+                // Wait for the response with a timeout
+                match tokio::time::timeout(Self::COMMAND_TIMEOUT, response_rx).await {
+                    Ok(Ok(response)) => {
+                        let elapsed = start.elapsed();
+                        log::debug!(
+                            "Command {} completed in {} ms (context={}, attempt={})",
+                            command_debug,
+                            (elapsed.as_micros() as f32 / 1000.0),
+                            context,
+                            attempt
+                        );
+                        return Ok(response);
+                    }
+                    Ok(Err(_)) => {
+                        Self::remove_pending_registration(&self.inner, &context).await;
+                        return Err(crate::Error::Debug(
+                            "command response channel closed".to_string(),
+                        ));
+                    }
+                    Err(_) => {
+                        log::warn!(
+                            "Command {} timed out after {:?} (context={}, attempt={})",
+                            command_debug,
+                            Self::COMMAND_TIMEOUT,
+                            context,
+                            attempt
+                        );
+                        Self::remove_pending_registration(&self.inner, &context).await;
+                        // Continue to next retry attempt
+                    }
+                }
+            }
+
+            Err(crate::Error::Timeout)
         }
 
         /// Send a command message (fire-and-forget).

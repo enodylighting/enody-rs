@@ -108,6 +108,30 @@ impl RusbDeviceConnection {
         Ok(device_handle)
     }
 
+    /// Drain any stale data from the USB read endpoint.
+    /// This prevents leftover bytes from a previous session from corrupting
+    /// message framing in the new session.
+    fn flush_stale_data(device_handle: &DeviceHandle<Context>) {
+        let flush_timeout = Duration::from_millis(50);
+        let mut flush_buffer = [0u8; USB_BUFFER_SIZE];
+        let mut total_flushed = 0usize;
+        loop {
+            match device_handle.read_bulk(READ_ENDPOINT, &mut flush_buffer, flush_timeout) {
+                Ok(n) => {
+                    total_flushed += n;
+                    log::trace!("Flushed {} stale bytes from USB read endpoint", n);
+                }
+                Err(_) => break, // Timeout or error means no more stale data
+            }
+        }
+        if total_flushed > 0 {
+            log::debug!(
+                "Flushed {} total stale bytes from USB read endpoint",
+                total_flushed
+            );
+        }
+    }
+
     fn open(device: &Device<Context>) -> Result<(Self, mpsc::Receiver<Message>), crate::Error> {
         log::debug!(
             "Opening USB device: bus={} address={} (VID={:#06x} PID={:#06x})",
@@ -119,6 +143,10 @@ impl RusbDeviceConnection {
 
         // initialize the connection handle to device
         let device_handle = Self::initialize_device_handle(device)?;
+
+        // flush any stale data from previous sessions
+        Self::flush_stale_data(&device_handle);
+
         let shared_device_handle = Arc::new(device_handle);
 
         // initialize message task communication queues
@@ -296,9 +324,11 @@ impl RemoteRuntimeConnection for RusbDevice {
 
         let payload: Vec<u8> =
             Vec::<u8>::try_from(message).map_err(|_| crate::Error::Serialization)?;
+        log::trace!("USB write_bulk: {} bytes to endpoint {:#04x}", payload.len(), WRITE_ENDPOINT);
         connection
             .handle()
             .write_bulk(WRITE_ENDPOINT, &payload, Duration::from_millis(1000))?;
+        log::trace!("USB write_bulk: completed");
 
         Ok(())
     }

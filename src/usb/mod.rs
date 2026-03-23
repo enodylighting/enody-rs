@@ -84,6 +84,9 @@ pub struct UsbEnvironment {
     runtime_event_tx: mpsc::Sender<EnvironmentRuntimeEvent>,
     runtime_event_rx: AsyncMutex<mpsc::Receiver<EnvironmentRuntimeEvent>>,
     event_handler_task: Option<JoinHandle<()>>,
+    /// Cached runtime handle for use during Drop (when the tokio context may
+    /// not be active, e.g. when called from Python's garbage collector).
+    runtime_handle: Option<tokio::runtime::Handle>,
 }
 
 impl UsbEnvironment {
@@ -109,10 +112,19 @@ impl UsbEnvironment {
         tokio::task::block_in_place(|| handle.block_on(runtime.connect()))
     }
 
-    fn disconnect_runtime(runtime: &RemoteRuntime) -> Result<(), crate::Error> {
-        let handle = tokio::runtime::Handle::try_current()
-            .map_err(|e| crate::Error::Debug(format!("tokio runtime required: {e}")))?;
-        tokio::task::block_in_place(|| handle.block_on(runtime.disconnect()))
+    fn disconnect_runtime_with_handle(
+        runtime: &RemoteRuntime,
+        handle: &tokio::runtime::Handle,
+    ) -> Result<(), crate::Error> {
+        // Spawn a plain OS thread for the disconnect so we avoid any issues
+        // with tokio context requirements (block_in_place needs a worker
+        // thread, Handle::block_on panics inside an async context). A plain
+        // thread has neither constraint.
+        let handle = handle.clone();
+        let runtime = runtime.clone();
+        std::thread::spawn(move || handle.block_on(runtime.disconnect()))
+            .join()
+            .map_err(|_| crate::Error::Debug("disconnect thread panicked".to_string()))?
     }
 
     fn connected_contains_key(
@@ -208,6 +220,7 @@ impl UsbEnvironment {
             runtime_event_tx,
             runtime_event_rx: AsyncMutex::new(runtime_event_rx),
             event_handler_task: None,
+            runtime_handle: tokio::runtime::Handle::try_current().ok(),
         }
     }
 
@@ -317,12 +330,27 @@ impl Drop for UsbEnvironment {
                 .collect()
         };
 
+        // Try the current tokio context first, fall back to the cached handle.
+        let handle = tokio::runtime::Handle::try_current()
+            .ok()
+            .or_else(|| self.runtime_handle.clone());
+
         for runtime in runtimes {
             if !runtime.is_connected() {
                 continue;
             }
 
-            if let Err(e) = Self::disconnect_runtime(&runtime) {
+            let result = match &handle {
+                Some(h) => Self::disconnect_runtime_with_handle(&runtime, h),
+                None => {
+                    log::error!(
+                        "No tokio runtime available to disconnect runtime on drop"
+                    );
+                    continue;
+                }
+            };
+
+            if let Err(e) = result {
                 log::error!(
                     "Failed to disconnect runtime on UsbEnvironment drop: {:?}",
                     e
