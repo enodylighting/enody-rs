@@ -50,12 +50,71 @@ pub struct EP01UpdateTarget {
 }
 
 impl EP01UpdateTarget {
+    /// On Linux the `cdc_acm` kernel driver must be bound to the CDC ACM
+    /// interfaces for `/dev/ttyACMx` to exist. If a previous rusb session
+    /// detached the driver (or the VM host never triggered binding in the
+    /// first place), we need to kick the driver into life.
+    ///
+    /// Strategy: open the device via rusb, which detaches the kernel driver
+    /// and claims the interface, then immediately close and re-attach. After
+    /// this the `cdc_acm` driver binds and the serial port appears.
+    #[cfg(target_os = "linux")]
+    fn ensure_serial_ports() {
+        use crate::usb::rusb::RusbBackend;
+        use crate::usb::UsbBackend;
+
+        // Only kick if there are no serial ports yet.
+        if SerialPortBackend::attached_ports()
+            .map(|p| !p.is_empty())
+            .unwrap_or(false)
+        {
+            return;
+        }
+
+        log::debug!("No serial ports found — attempting to bind cdc_acm via rusb cycle");
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        let Ok(backend) = RusbBackend::init(event_tx) else {
+            return;
+        };
+        let Ok(devices) = backend.attached() else {
+            return;
+        };
+
+        // For each matching device, open → claim → release → re-attach drivers.
+        // The RusbDeviceConnection::open + close cycle handles this.
+        for device in devices {
+            // connect() opens the handle, detaches drivers, claims interface
+            let rt_handle = match tokio::runtime::Handle::try_current() {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
+            if let Err(e) = tokio::task::block_in_place(|| rt_handle.block_on(device.connect())) {
+                log::debug!("Failed to connect for driver rebind: {:?}", e);
+                continue;
+            }
+            // disconnect() releases interface and re-attaches kernel drivers
+            let _ = tokio::task::block_in_place(|| rt_handle.block_on(device.disconnect()));
+        }
+
+        // Give the kernel a moment to bind cdc_acm and create tty devices
+        std::thread::sleep(Duration::from_millis(100));
+
+        let count = SerialPortBackend::attached_ports()
+            .map(|p| p.len())
+            .unwrap_or(0);
+        log::debug!("After driver rebind: {} serial port(s) found", count);
+    }
+
     /// Discover attached devices without querying firmware. Uses the USB
     /// serial number (MAC address) to deduplicate ports belonging to the same
     /// physical device. Returns targets with a nil host UUID and zero
     /// version — useful when firmware is broken and cannot respond to
     /// HostInfo queries.
     pub fn attached_raw() -> Vec<Self> {
+        // On Linux, ensure the cdc_acm driver is bound so serial ports exist.
+        #[cfg(target_os = "linux")]
+        Self::ensure_serial_ports();
+
         let Ok(matches) = SerialPortBackend::attached_ports() else {
             return vec![];
         };
