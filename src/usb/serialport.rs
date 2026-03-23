@@ -306,12 +306,8 @@ impl SerialPortBackend {
                 continue;
             };
 
-            let product = info.product.as_deref().unwrap_or("");
-
             if ALL_IDENTIFIERS.iter().any(|identifier| {
-                identifier.vendor_id == info.vid
-                    && identifier.product_id == info.pid
-                    && (cfg!(not(target_os = "windows")) || product.contains("(Interface 0)"))
+                identifier.vendor_id == info.vid && identifier.product_id == info.pid
             }) {
                 matching_ports.push((port.port_name, info));
             }

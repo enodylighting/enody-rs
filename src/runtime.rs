@@ -284,13 +284,22 @@ pub mod remote {
 
                 // Send the command
                 let start = std::time::Instant::now();
-                log::trace!("Sending command {} (context={}, attempt={})", command_debug, context, attempt);
+                log::trace!(
+                    "Sending command {} (context={}, attempt={})",
+                    command_debug,
+                    context,
+                    attempt
+                );
                 let message = Message::Command(attempt_command);
                 if let Err(error) = self.inner.connection.send_message(message).await {
                     Self::remove_pending_registration(&self.inner, &context).await;
                     return Err(error);
                 }
-                log::trace!("Command {} sent, awaiting response (context={})", command_debug, context);
+                log::trace!(
+                    "Command {} sent, awaiting response (context={})",
+                    command_debug,
+                    context
+                );
 
                 // Wait for the response with a timeout
                 match tokio::time::timeout(Self::COMMAND_TIMEOUT, response_rx).await {

@@ -188,11 +188,17 @@ impl RusbDeviceConnection {
         for interface in [Self::CDC_CONTROL_INTERFACE, Self::CDC_DATA_INTERFACE] {
             match self.handle.attach_kernel_driver(interface) {
                 Ok(_) => log::trace!("Re-attached kernel driver on interface {}", interface),
-                Err(rusb::Error::NotFound) | Err(rusb::Error::NoDevice) | Err(rusb::Error::NotSupported) => {
+                Err(rusb::Error::NotFound)
+                | Err(rusb::Error::NoDevice)
+                | Err(rusb::Error::NotSupported) => {
                     // No driver to re-attach, device gone, or platform doesn't support it — fine.
                 }
                 Err(e) => {
-                    log::trace!("Could not re-attach kernel driver on interface {}: {:?}", interface, e);
+                    log::trace!(
+                        "Could not re-attach kernel driver on interface {}: {:?}",
+                        interface,
+                        e
+                    );
                 }
             }
         }
@@ -339,7 +345,11 @@ impl RemoteRuntimeConnection for RusbDevice {
 
         let payload: Vec<u8> =
             Vec::<u8>::try_from(message).map_err(|_| crate::Error::Serialization)?;
-        log::trace!("USB write_bulk: {} bytes to endpoint {:#04x}", payload.len(), WRITE_ENDPOINT);
+        log::trace!(
+            "USB write_bulk: {} bytes to endpoint {:#04x}",
+            payload.len(),
+            WRITE_ENDPOINT
+        );
         connection
             .handle()
             .write_bulk(WRITE_ENDPOINT, &payload, Duration::from_millis(1000))?;

@@ -343,9 +343,7 @@ impl Drop for UsbEnvironment {
             let result = match &handle {
                 Some(h) => Self::disconnect_runtime_with_handle(&runtime, h),
                 None => {
-                    log::error!(
-                        "No tokio runtime available to disconnect runtime on drop"
-                    );
+                    log::error!("No tokio runtime available to disconnect runtime on drop");
                     continue;
                 }
             };
