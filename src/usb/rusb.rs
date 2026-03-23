@@ -182,6 +182,21 @@ impl RusbDeviceConnection {
             log::warn!("Failed to release USB interface: {:?}", e);
         }
 
+        // Re-attach kernel drivers so that cdc_acm (or similar) can bind
+        // again, restoring /dev/ttyACMx for the serial port backend and the
+        // firmware update path.
+        for interface in [Self::CDC_CONTROL_INTERFACE, Self::CDC_DATA_INTERFACE] {
+            match self.handle.attach_kernel_driver(interface) {
+                Ok(_) => log::trace!("Re-attached kernel driver on interface {}", interface),
+                Err(rusb::Error::NotFound) | Err(rusb::Error::NoDevice) | Err(rusb::Error::NotSupported) => {
+                    // No driver to re-attach, device gone, or platform doesn't support it — fine.
+                }
+                Err(e) => {
+                    log::trace!("Could not re-attach kernel driver on interface {}: {:?}", interface, e);
+                }
+            }
+        }
+
         Ok(())
     }
 
