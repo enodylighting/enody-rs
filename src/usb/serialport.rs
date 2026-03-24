@@ -88,8 +88,7 @@ impl SerialPortConnection {
         mut task_shutdown: broadcast::Receiver<()>,
     ) -> impl FnOnce() -> Result<(), crate::Error> {
         move || {
-            let mut message_buffer = Vec::<u8>::new();
-            let mut escaped = false;
+            let mut stream = serialization::MessageStream::new();
             let mut read_buffer = [0u8; USB_BUFFER_SIZE];
 
             loop {
@@ -107,15 +106,8 @@ impl SerialPortConnection {
                 match serial_port.read(&mut read_buffer) {
                     Ok(bytes_read) => {
                         for &byte in &read_buffer[..bytes_read] {
-                            if message_buffer.is_empty() && byte != serialization::CONTROL_CHAR_STX
-                            {
-                                continue;
-                            }
-
-                            message_buffer.push(byte);
-
-                            if byte == serialization::CONTROL_CHAR_ETX && !escaped {
-                                match Message::try_from(message_buffer.clone()) {
+                            if let Some(payload) = stream.push_byte(byte) {
+                                match postcard::from_bytes::<Message>(&payload) {
                                     Ok(message) => {
                                         log::trace!("received message: {:?}", message);
                                         if let Err(_e) = message_tx.try_send(message) {}
@@ -124,10 +116,7 @@ impl SerialPortConnection {
                                         log::trace!("failed to deserialize message: {:?}", e);
                                     }
                                 }
-                                message_buffer.clear();
                             }
-
-                            escaped = byte == serialization::CONTROL_CHAR_DLE && !escaped;
                         }
                     }
                     Err(e) if e.kind() == ErrorKind::TimedOut => {}

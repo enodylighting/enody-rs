@@ -114,16 +114,13 @@ impl RusbDeviceConnection {
     fn flush_stale_data(device_handle: &DeviceHandle<Context>) {
         let flush_timeout = Duration::from_millis(50);
         let mut flush_buffer = [0u8; USB_BUFFER_SIZE];
-        let mut total_flushed = 0usize;
-        loop {
-            match device_handle.read_bulk(READ_ENDPOINT, &mut flush_buffer, flush_timeout) {
-                Ok(n) => {
-                    total_flushed += n;
-                    log::trace!("Flushed {} stale bytes from USB read endpoint", n);
-                }
-                Err(_) => break, // Timeout or error means no more stale data
-            }
+        let mut total_flushed: usize = 0;
+
+        while let Ok(n) = device_handle.read_bulk(READ_ENDPOINT, &mut flush_buffer, flush_timeout) {
+            total_flushed += n;
+            log::trace!("Flushed {} stale bytes from USB read endpoint", n);
         }
+
         if total_flushed > 0 {
             log::debug!(
                 "Flushed {} total stale bytes from USB read endpoint",
@@ -213,8 +210,7 @@ impl RusbDeviceConnection {
     ) -> impl FnOnce() -> Result<(), crate::Error> {
         let task_handle = device_handle.clone();
         move || {
-            let mut message_buffer = Vec::<u8>::new();
-            let mut escaped = false;
+            let mut stream = serialization::MessageStream::new();
             let timeout = Duration::from_millis(100);
             loop {
                 let mut read_buffer = [u8::default(); USB_BUFFER_SIZE];
@@ -223,15 +219,9 @@ impl RusbDeviceConnection {
                     .map_err(|e| crate::Error::USB(e.to_string()));
 
                 if let Ok(bytes_read) = read_result {
-                    for byte in read_buffer.iter().take(bytes_read) {
-                        if message_buffer.is_empty() && *byte != serialization::CONTROL_CHAR_STX {
-                            continue;
-                        }
-
-                        message_buffer.push(*byte);
-
-                        if *byte == serialization::CONTROL_CHAR_ETX && !escaped {
-                            match Message::try_from(message_buffer.clone()) {
+                    for &byte in read_buffer.iter().take(bytes_read) {
+                        if let Some(payload) = stream.push_byte(byte) {
+                            match postcard::from_bytes::<Message>(&payload) {
                                 Ok(message) => {
                                     log::trace!("received message: {:?}", message);
                                     if let Err(_e) = message_tx.try_send(message) {}
@@ -240,10 +230,7 @@ impl RusbDeviceConnection {
                                     log::trace!("failed to deserialize message: {:?}", e);
                                 }
                             }
-                            message_buffer.clear();
                         }
-
-                        escaped = (*byte == serialization::CONTROL_CHAR_DLE) && !escaped;
                     }
                 }
 
@@ -273,6 +260,9 @@ struct RusbDevice {
     device: Device<Context>,
     identifier: Identifier,
     message_rx: Mutex<Option<mpsc::Receiver<Message>>>,
+    /// Serializes USB bulk writes so concurrent `send_message` calls cannot
+    /// interleave framed bytes on the wire.
+    write_mutex: Mutex<()>,
 }
 
 impl RusbDevice {
@@ -283,6 +273,7 @@ impl RusbDevice {
             device,
             identifier,
             message_rx: Mutex::new(None),
+            write_mutex: Mutex::new(()),
         }
     }
 }
@@ -343,8 +334,14 @@ impl RemoteRuntimeConnection for RusbDevice {
             return Err(crate::Error::USB("No active connection".to_string()));
         };
 
+        // Serialize the frame before acquiring the write lock so encoding
+        // work doesn't hold the mutex.
         let payload: Vec<u8> =
             Vec::<u8>::try_from(message).map_err(|_| crate::Error::Serialization)?;
+
+        // Hold the write mutex for the duration of the bulk write so that
+        // concurrent callers cannot interleave framed bytes on the wire.
+        let _write_guard = self.write_mutex.lock().unwrap();
         log::trace!(
             "USB write_bulk: {} bytes to endpoint {:#04x}",
             payload.len(),

@@ -296,11 +296,9 @@ impl EP01UpdateTarget {
     pub async fn update_available(&self) -> Result<bool, Error> {
         let versions = fetch_firmware_manifest(&self.info.identifier).await?;
         let current = &self.info.version;
-        Ok(versions.iter().any(|fv| {
-            fv.version
-                .parse::<Version>()
-                .map_or(false, |v| v > *current)
-        }))
+        Ok(versions
+            .iter()
+            .any(|fv| fv.version.parse::<Version>().is_ok_and(|v| v > *current)))
     }
 
     pub async fn update_device(&self, version: &str) -> Result<(), Error> {
