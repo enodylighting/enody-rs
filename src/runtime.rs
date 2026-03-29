@@ -199,10 +199,19 @@ pub mod remote {
                     }
                 }
 
-                // Forward unmatched messages to the channel
-                if inner.message_tx.send(message).await.is_err() {
-                    log::trace!("Message channel closed, dispatch task ending");
-                    break;
+                // Forward unmatched messages to the channel.
+                // Use try_send to avoid blocking the dispatch loop when the
+                // channel is full (e.g. nobody is calling next_message()).
+                // Blocking here would stall command-response delivery.
+                match inner.message_tx.try_send(message) {
+                    Ok(_) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        log::trace!("Unmatched message channel full, dropping message");
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        log::trace!("Message channel closed, dispatch task ending");
+                        break;
+                    }
                 }
             }
         }
