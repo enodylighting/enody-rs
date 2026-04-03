@@ -134,6 +134,16 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    SettingGet {
+        key: String
+    },
+    SettingSet {
+        key: String,
+        value: String
+    },
+    SettingDelete {
+        key: String
+    }
 }
 
 #[tokio::main]
@@ -182,7 +192,11 @@ async fn main() -> Result<(), enody::Error> {
         Commands::Update { firmware, force } => {
             enody::update::update_remote_host(firmware, force).await?
         }
+        Commands::SettingGet { key } => setting_get(&key).await?,
+        Commands::SettingSet { key, value } => setting_set(&key, &value, cli.verbose).await?,
+        Commands::SettingDelete { key} => setting_delete(&key, cli.verbose).await?
     }
+
 
     Ok(())
 }
@@ -771,6 +785,67 @@ async fn fade(
         total_frames + 1,
         duration
     );
+
+    Ok(())
+}
+
+async fn setting_get(key: &str) -> Result<(), enody::Error> {
+    let environment = UsbEnvironment::new();
+    let runtimes = environment.runtimes();
+
+    if runtimes.is_empty() {
+        println!("No Enody devices found.");
+        return Ok(());
+    }
+
+    for runtime in &runtimes {
+        let Ok(value) = runtime.setting_get::<f32>(key).await else {
+            println!("Failed to get setting '{}'", key);
+            continue;
+        };
+        println!("{}: {}", key, value);
+    }
+
+    Ok(())
+}
+
+// Action commands — verbose-gated (like set_blackbody / set_chromaticity):
+async fn setting_set(key: &str, value: &str, verbose: bool) -> Result<(), enody::Error> {
+    let environment = UsbEnvironment::new();
+    let runtimes = environment.runtimes();
+
+    if runtimes.is_empty() {
+        vprintln!(verbose, "No Enody devices found.");
+        return Ok(());
+    }
+
+    let parsed: f32 = value.parse().map_err(|_| enody::Error::Unknown)?;
+
+    for runtime in &runtimes {
+        match runtime.setting_set(key, parsed).await {
+            Ok(()) => vprintln!(verbose, "Set '{}' = {}", key, parsed),
+            Err(e) => vprintln!(verbose, "Failed to set '{}': {:?}", key, e),
+        }
+    }
+
+    Ok(())
+}
+
+async fn setting_delete(key: &str, verbose: bool) -> Result<(), enody::Error> {
+    let environment = UsbEnvironment::new();
+    let runtimes = environment.runtimes();
+
+    if runtimes.is_empty() {
+        vprintln!(verbose, "No Enody devices found.");
+        return Ok(());
+    }
+
+    for runtime in &runtimes {
+        match runtime.setting_delete(key).await {
+            Ok(()) => vprintln!(verbose, "Deleted '{}'", key),
+            Err(e) => vprintln!(verbose, "Failed to delete '{}': {:?}", key, e),
+        }
+    }
 
     Ok(())
 }

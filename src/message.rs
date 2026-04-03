@@ -320,15 +320,10 @@ pub struct RuntimeInfo {
     pub identifier: Identifier,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub enum SettingKey {
-	MaxPower,
-}
+pub type SettingKey = heapless::String<64>;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum SettingValue {
-	MaxPower(f32),
-}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SettingValue(pub heapless::Vec<u8, 64>);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LogEvent {

@@ -372,30 +372,40 @@ pub mod remote {
             RemoteHost::from_runtime(self.clone()).await
         }
 
-        pub async fn setting_get(&self, key: SettingKey) -> Result<SettingValue, crate::Error> {
+        pub async fn setting_get<Value>(&self, key: &str) -> Result<Value, crate::Error>
+        where
+         Value: serde::de::DeserializeOwned
+        {
+            let key = SettingKey::try_from(key).map_err(|_| crate::Error::Unknown)?;
             let command = Command::Runtime(RuntimeCommand::SettingGet(key));
-            let command_message = CommandMessage::root(command,None);
-            let event_message = self.execute_command(command_message).await?;
+            let event_message = self.execute_command(CommandMessage::root(command, None)).await?;
             match event_message.event {
-                Event::Runtime(RuntimeEvent::SettingGet(_, value)) => Ok(value),
+                Event::Runtime(RuntimeEvent::SettingGet(_, Some(bytes))) =>
+                    postcard::from_bytes(bytes.as_slice()).map_err(|_| crate::Error::Serialization),
                 _ => Err(crate::Error::UnexpectedResponse),
             }
         }
 
-        pub async fn setting_set(&self, key: SettingKey, value: SettingValue) -> Result<(), crate::Error> {
-            let command = Command::Runtime(RuntimeCommand::SettingSet(key, value));
-            let command_message = CommandMessage::root(command,None);
-            let event_message = self.execute_command(command_message).await?;
+        pub async fn setting_set<Value>(&self, key: &str, value: Value) -> Result<(), crate::Error>
+        where
+            Value: serde::Serialize
+        {
+            let key = SettingKey::try_from(key).map_err(|_| crate::Error::Unknown)?;
+            let bytes = postcard::to_allocvec(&value)
+                .map_err(|_| crate::Error::Serialization)?;
+            let setting_value = heapless::Vec::from_slice(&bytes).map_err(|_| crate::Error::Serialization)?;
+            let command = Command::Runtime(RuntimeCommand::SettingSet(key, Some(setting_value)));
+            let event_message = self.execute_command(CommandMessage::root(command, None)).await?;
             match event_message.event {
                 Event::Runtime(RuntimeEvent::SettingSet(_)) => Ok(()),
                 _ => Err(crate::Error::UnexpectedResponse),
             }
         }
 
-        pub async fn setting_delete(&self, key: SettingKey) -> Result<(), crate::Error> {
+        pub async fn setting_delete(&self, key: &str) -> Result<(), crate::Error> {
+            let key = SettingKey::try_from(key).map_err(|_| crate::Error::Unknown)?;
             let command = Command::Runtime(RuntimeCommand::SettingDelete(key));
-            let command_message = CommandMessage::root(command,None);
-            let event_message = self.execute_command(command_message).await?;
+            let event_message = self.execute_command(CommandMessage::root(command, None)).await?;
             match event_message.event {
                 Event::Runtime(RuntimeEvent::SettingDelete(_)) => Ok(()),
                 _ => Err(crate::Error::UnexpectedResponse),
