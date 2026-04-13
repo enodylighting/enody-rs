@@ -381,17 +381,17 @@ pub mod remote {
         where
             Value: serde::de::DeserializeOwned,
         {
-            let key = SettingKey::try_from(key).map_err(|_| crate::Error::Unknown)?;
+            let key = SettingKey::try_from(key).map_err(|_| crate::Error::Argument)?;
             let command = Command::Runtime(RuntimeCommand::SettingGet(key));
-            let event_message = self
+            let message = self
                 .execute_command(CommandMessage::root(command, None))
                 .await?;
-            match event_message.event {
+            match message.event {
                 Event::Runtime(RuntimeEvent::SettingGet(_, StoredSetting::Missing)) => {
                     Err(crate::Error::InsufficientData)
                 }
                 Event::Runtime(RuntimeEvent::SettingGet(_, StoredSetting::Private)) => {
-                    Err(crate::Error::InsufficientData)
+                    Err(crate::Error::Permission)
                 }
                 Event::Runtime(RuntimeEvent::SettingGet(_, StoredSetting::Public(bytes))) => {
                     let value = postcard::from_bytes(bytes.as_slice())
@@ -406,27 +406,27 @@ pub mod remote {
         where
             Value: serde::Serialize,
         {
-            let key = SettingKey::try_from(key).map_err(|_| crate::Error::Unknown)?;
+            let key = SettingKey::try_from(key).map_err(|_| crate::Error::Argument)?;
             let bytes = postcard::to_allocvec(&value).map_err(|_| crate::Error::Serialization)?;
             let setting_value =
                 SettingValue::from_slice(&bytes).map_err(|_| crate::Error::Serialization)?;
             let command = Command::Runtime(RuntimeCommand::SettingSet(key, setting_value));
-            let event_message = self
+            let message = self
                 .execute_command(CommandMessage::root(command, None))
                 .await?;
-            match event_message.event {
+            match message.event {
                 Event::Runtime(RuntimeEvent::SettingSet(_)) => Ok(()),
                 _ => Err(crate::Error::UnexpectedResponse),
             }
         }
 
         pub async fn setting_delete(&self, key: &str) -> Result<(), crate::Error> {
-            let key = SettingKey::try_from(key).map_err(|_| crate::Error::Unknown)?;
+            let key = SettingKey::try_from(key).map_err(|_| crate::Error::Argument)?;
             let command = Command::Runtime(RuntimeCommand::SettingDelete(key));
-            let event_message = self
+            let message = self
                 .execute_command(CommandMessage::root(command, None))
                 .await?;
-            match event_message.event {
+            match message.event {
                 Event::Runtime(RuntimeEvent::SettingDelete(_)) => Ok(()),
                 _ => Err(crate::Error::UnexpectedResponse),
             }

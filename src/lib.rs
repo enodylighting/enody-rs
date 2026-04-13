@@ -39,4 +39,6 @@ pub enum Error {
     InsufficientData,
     UnexpectedResponse,
     Timeout,
+    Argument,
+    Permission,
 }
