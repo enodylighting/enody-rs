@@ -320,11 +320,6 @@ pub struct RuntimeInfo {
     pub identifier: Identifier,
 }
 
-pub type SettingKey = heapless::String<64>;
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct SettingValue(pub heapless::Vec<u8, 64>);
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct LogEvent {
     pub level: LogLevel,
@@ -340,6 +335,12 @@ pub enum LogLevel {
     Debug,
     Trace,
 }
+
+pub const SETTING_KEY_MAX_LEN: usize = 64;
+pub type SettingKey = String<SETTING_KEY_MAX_LEN>;
+
+pub const SETTING_VALUE_MAX_LEN: usize = 64;
+pub type SettingValue = Option<Vec<u8, SETTING_VALUE_MAX_LEN>>;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EnvironmentCommand {
