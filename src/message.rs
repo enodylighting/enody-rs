@@ -309,7 +309,7 @@ pub enum RuntimeEvent {
     Host(HostInfo),
     EnvironmentCount(u32),
     EnvironmentInfo(EnvironmentInfo),
-    SettingGet(SettingKey, SettingValue),
+    SettingGet(SettingKey, StoredSetting),
     SettingSet(SettingKey),
     SettingDelete(SettingKey),
 }
@@ -340,7 +340,13 @@ pub const SETTING_KEY_MAX_LEN: usize = 64;
 pub type SettingKey = String<SETTING_KEY_MAX_LEN>;
 
 pub const SETTING_VALUE_MAX_LEN: usize = 64;
-pub type SettingValue = Option<Vec<u8, SETTING_VALUE_MAX_LEN>>;
+pub type SettingValue = Vec<u8, SETTING_VALUE_MAX_LEN>;
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum StoredSetting {
+    Missing,
+    Public(SettingValue),
+    Private,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum EnvironmentCommand {

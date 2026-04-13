@@ -16,7 +16,12 @@ pub trait Runtime {
 #[cfg(feature = "remote")]
 pub mod remote {
     use crate::{
-        Identifier, host::remote::RemoteHost, message::{Command, CommandMessage, Event, EventMessage, LogLevel, Message, RuntimeCommand, RuntimeEvent, SettingKey, SettingValue}
+        host::remote::RemoteHost,
+        message::{
+            Command, CommandMessage, Event, EventMessage, LogLevel, Message, RuntimeCommand,
+            RuntimeEvent, SettingKey, SettingValue, StoredSetting,
+        },
+        Identifier,
     };
     use async_trait::async_trait;
 
@@ -374,28 +379,41 @@ pub mod remote {
 
         pub async fn setting_get<Value>(&self, key: &str) -> Result<Value, crate::Error>
         where
-         Value: serde::de::DeserializeOwned
+            Value: serde::de::DeserializeOwned,
         {
             let key = SettingKey::try_from(key).map_err(|_| crate::Error::Unknown)?;
             let command = Command::Runtime(RuntimeCommand::SettingGet(key));
-            let event_message = self.execute_command(CommandMessage::root(command, None)).await?;
+            let event_message = self
+                .execute_command(CommandMessage::root(command, None))
+                .await?;
             match event_message.event {
-                Event::Runtime(RuntimeEvent::SettingGet(_, Some(bytes))) =>
-                    postcard::from_bytes(bytes.as_slice()).map_err(|_| crate::Error::Serialization),
+                Event::Runtime(RuntimeEvent::SettingGet(_, StoredSetting::Missing)) => {
+                    Err(crate::Error::InsufficientData)
+                }
+                Event::Runtime(RuntimeEvent::SettingGet(_, StoredSetting::Private)) => {
+                    Err(crate::Error::InsufficientData)
+                }
+                Event::Runtime(RuntimeEvent::SettingGet(_, StoredSetting::Public(bytes))) => {
+                    let value = postcard::from_bytes(bytes.as_slice())
+                        .map_err(|_| crate::Error::Serialization)?;
+                    Ok(value)
+                }
                 _ => Err(crate::Error::UnexpectedResponse),
             }
         }
 
         pub async fn setting_set<Value>(&self, key: &str, value: Value) -> Result<(), crate::Error>
         where
-            Value: serde::Serialize
+            Value: serde::Serialize,
         {
             let key = SettingKey::try_from(key).map_err(|_| crate::Error::Unknown)?;
-            let bytes = postcard::to_allocvec(&value)
-                .map_err(|_| crate::Error::Serialization)?;
-            let setting_value = heapless::Vec::from_slice(&bytes).map_err(|_| crate::Error::Serialization)?;
-            let command = Command::Runtime(RuntimeCommand::SettingSet(key, Some(setting_value)));
-            let event_message = self.execute_command(CommandMessage::root(command, None)).await?;
+            let bytes = postcard::to_allocvec(&value).map_err(|_| crate::Error::Serialization)?;
+            let setting_value =
+                SettingValue::from_slice(&bytes).map_err(|_| crate::Error::Serialization)?;
+            let command = Command::Runtime(RuntimeCommand::SettingSet(key, setting_value));
+            let event_message = self
+                .execute_command(CommandMessage::root(command, None))
+                .await?;
             match event_message.event {
                 Event::Runtime(RuntimeEvent::SettingSet(_)) => Ok(()),
                 _ => Err(crate::Error::UnexpectedResponse),
@@ -405,7 +423,9 @@ pub mod remote {
         pub async fn setting_delete(&self, key: &str) -> Result<(), crate::Error> {
             let key = SettingKey::try_from(key).map_err(|_| crate::Error::Unknown)?;
             let command = Command::Runtime(RuntimeCommand::SettingDelete(key));
-            let event_message = self.execute_command(CommandMessage::root(command, None)).await?;
+            let event_message = self
+                .execute_command(CommandMessage::root(command, None))
+                .await?;
             match event_message.event {
                 Event::Runtime(RuntimeEvent::SettingDelete(_)) => Ok(()),
                 _ => Err(crate::Error::UnexpectedResponse),

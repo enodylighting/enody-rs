@@ -135,15 +135,15 @@ enum Commands {
         force: bool,
     },
     SettingGet {
-        key: String
+        key: String,
     },
     SettingSet {
         key: String,
-        value: String
+        value: String,
     },
     SettingDelete {
-        key: String
-    }
+        key: String,
+    },
 }
 
 #[tokio::main]
@@ -194,9 +194,8 @@ async fn main() -> Result<(), enody::Error> {
         }
         Commands::SettingGet { key } => setting_get(&key).await?,
         Commands::SettingSet { key, value } => setting_set(&key, &value, cli.verbose).await?,
-        Commands::SettingDelete { key} => setting_delete(&key, cli.verbose).await?
+        Commands::SettingDelete { key } => setting_delete(&key, cli.verbose).await?,
     }
-
 
     Ok(())
 }
@@ -799,11 +798,11 @@ async fn setting_get(key: &str) -> Result<(), enody::Error> {
     }
 
     for runtime in &runtimes {
-        let Ok(value) = runtime.setting_get::<f32>(key).await else {
+        let Ok(value) = runtime.setting_get::<Vec<u8>>(key).await else {
             println!("Failed to get setting '{}'", key);
             continue;
         };
-        println!("{}: {}", key, value);
+        println!("{}: {:?}", key, value);
     }
 
     Ok(())
@@ -819,11 +818,11 @@ async fn setting_set(key: &str, value: &str, verbose: bool) -> Result<(), enody:
         return Ok(());
     }
 
-    let parsed: f32 = value.parse().map_err(|_| enody::Error::Unknown)?;
+    let parsed: Vec<u8> = value.as_bytes().to_vec();
 
     for runtime in &runtimes {
-        match runtime.setting_set(key, parsed).await {
-            Ok(()) => vprintln!(verbose, "Set '{}' = {}", key, parsed),
+        match runtime.setting_set(key, parsed.clone()).await {
+            Ok(()) => vprintln!(verbose, "Set '{}' = {:?}", key, parsed),
             Err(e) => vprintln!(verbose, "Failed to set '{}': {:?}", key, e),
         }
     }
