@@ -120,7 +120,7 @@ impl MessageStream {
             if byte == CONTROL_CHAR_STX && !self.is_escaped {
                 buffer_push!(self.buffer, byte);
             }
-            self.is_escaped = byte == CONTROL_CHAR_DLE;
+            self.is_escaped = byte == CONTROL_CHAR_DLE && !self.is_escaped;
             return None;
         }
 
@@ -250,6 +250,46 @@ mod tests {
         let mut stream = MessageStream::new();
         let results = stream.push_bytes(&buf);
         assert_eq!(results.len(), 2, "should recover both frames");
+    }
+
+    #[test]
+    fn parser_syncs_to_stx_after_leading_garbage() {
+        let frame = make_host_info_frame();
+        let mut buf = vec![0x00, CONTROL_CHAR_ETX, CONTROL_CHAR_DLE, 0xff];
+        buf.extend(&frame);
+
+        let mut stream = MessageStream::new();
+        let results = stream.push_bytes(&buf);
+
+        assert_eq!(results.len(), 1, "leading garbage should be ignored");
+        let msg: Message = postcard::from_bytes(&results[0]).expect("deserialize");
+        assert!(matches!(
+            msg,
+            Message::Command(CommandMessage {
+                command: Command::Host(HostCommand::Info),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parser_ignores_escaped_stx_before_frame_start() {
+        let frame = make_host_info_frame();
+        let mut buf = vec![CONTROL_CHAR_DLE, CONTROL_CHAR_STX];
+        buf.extend(&frame);
+
+        let mut stream = MessageStream::new();
+        let results = stream.push_bytes(&buf);
+
+        assert_eq!(results.len(), 1, "escaped leading STX should be ignored");
+        let msg: Message = postcard::from_bytes(&results[0]).expect("deserialize");
+        assert!(matches!(
+            msg,
+            Message::Command(CommandMessage {
+                command: Command::Host(HostCommand::Info),
+                ..
+            })
+        ));
     }
 
     /// Sweep across burst sizes and verify zero frame loss.
