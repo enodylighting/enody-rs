@@ -339,8 +339,9 @@ pub enum LogLevel {
 pub const SETTING_KEY_MAX_LEN: usize = 64;
 pub type SettingKey = String<SETTING_KEY_MAX_LEN>;
 
-pub const SETTING_VALUE_MAX_LEN: usize = 64;
+pub const SETTING_VALUE_MAX_LEN: usize = 128;
 pub type SettingValue = Vec<u8, SETTING_VALUE_MAX_LEN>;
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum StoredSetting {
     Missing,
