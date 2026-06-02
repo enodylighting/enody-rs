@@ -9,6 +9,7 @@ pub const WIFI_FRAME_PAYLOAD_MAX_LEN: usize = WIFI_MESSAGE_MAX_LEN + NOISE_TAG_L
 pub const WIFI_PROTOCOL: &str = "enody-v1";
 pub const WIFI_AUTH: &str = "noise-psk";
 pub const WIFI_NOISE: &str = "Noise_NNpsk0_25519_ChaChaPoly_SHA256";
+pub const WIFI_PAIRING_NOISE: &str = "Noise_NN_25519_ChaChaPoly_SHA256";
 
 const NOISE_TAG_LEN: usize = 16;
 
@@ -22,6 +23,10 @@ pub enum WifiError {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Request {
+    PairingNoise {
+        version: u8,
+        payload: HVec<u8, WIFI_FRAME_PAYLOAD_MAX_LEN>,
+    },
     Hello {
         version: u8,
         key_id: HString<TOKEN_STRING_MAX_LEN>,
@@ -33,6 +38,9 @@ pub enum Request {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Response {
+    PairingNoise {
+        payload: HVec<u8, WIFI_FRAME_PAYLOAD_MAX_LEN>,
+    },
     Noise {
         payload: HVec<u8, WIFI_FRAME_PAYLOAD_MAX_LEN>,
     },
@@ -47,7 +55,7 @@ mod remote {
     use super::*;
     use crate::{
         environment::{DiscoveryEnvironment, Environment, EnvironmentRuntimeEvent},
-        message::{Message, Token},
+        message::{Event, Message, RuntimeEvent, Token},
         runtime::remote::{RemoteRuntime, RemoteRuntimeConnection},
         Identifier,
     };
@@ -87,6 +95,8 @@ mod remote {
     const WIFI_SERVICE_LABELS: &[&str] = &["_enody", "_tcp", "local"];
     const WIFI_SERVICE_SUFFIX: &str = "._enody._tcp.local";
     const NOISE_PROLOGUE_LABEL: &[u8] = b"enody-v1 noise";
+    const PAIRING_NOISE_PROLOGUE_LABEL: &[u8] = b"enody-v1 pairing";
+    const PAIRING_TOKEN_TIMEOUT: Duration = Duration::from_secs(45);
 
     #[derive(Clone, Debug)]
     struct ConnectedWifiRuntime {
@@ -638,6 +648,45 @@ mod remote {
             )?)))
         }
 
+        /// Generate a new WiFi token through the unauthenticated generation flow.
+        ///
+        /// The device will ask for physical approval before issuing the token.
+        /// `on_approval` is called when the device sends its approval
+        /// instruction, usually so a UI can show the user what gesture to
+        /// perform.
+        pub async fn generate_token_from_endpoint_with_approval<F>(
+            endpoint: impl Into<String>,
+            on_approval: F,
+        ) -> Result<Token, crate::Error>
+        where
+            F: FnMut(&str),
+        {
+            generate_token_from_endpoint(endpoint, on_approval).await
+        }
+
+        /// Generate a new WiFi token for a discovered device.
+        pub async fn generate_token_from_discovered_device_with_approval<F>(
+            device: &WifiDiscoveredDevice,
+            on_approval: F,
+        ) -> Result<Token, crate::Error>
+        where
+            F: FnMut(&str),
+        {
+            let endpoint = device.endpoint().ok_or(crate::Error::Argument)?;
+            Self::generate_token_from_endpoint_with_approval(endpoint, on_approval).await
+        }
+
+        /// Discover EP01 devices that advertise enough mDNS metadata to attempt
+        /// WiFi token generation.
+        pub async fn discover_token_generation_devices(
+            timeout: Duration,
+        ) -> Result<Vec<WifiDiscoveredDevice>, crate::Error> {
+            let mut devices = discover(timeout).await?;
+            devices.retain(WifiDiscoveredDevice::is_token_generation_candidate);
+            devices.sort_by_key(|device| device.endpoint());
+            Ok(devices)
+        }
+
         async fn authenticate(
             &self,
             stream: &mut TcpStream,
@@ -670,6 +719,7 @@ mod remote {
                     }
                     noise.into_transport_mode().map_err(noise_error)
                 }
+                Response::PairingNoise { .. } => Err(crate::Error::UnexpectedResponse),
                 Response::Error(error) => Err(wifi_error(error)),
             }
         }
@@ -796,6 +846,7 @@ mod remote {
                         return Ok(());
                     }
                 }
+                Response::PairingNoise { .. } => return Err(crate::Error::UnexpectedResponse),
                 Response::Error(error) => return Err(wifi_error(error)),
             }
         }
@@ -886,9 +937,145 @@ mod remote {
             .map_err(noise_error)
     }
 
+    fn pairing_noise_prologue() -> Vec<u8> {
+        PAIRING_NOISE_PROLOGUE_LABEL.to_vec()
+    }
+
+    fn build_pairing_noise_initiator() -> Result<snow::HandshakeState, crate::Error> {
+        let params: snow::params::NoiseParams = WIFI_PAIRING_NOISE.parse().map_err(noise_error)?;
+        let prologue = pairing_noise_prologue();
+        snow::Builder::new(params)
+            .prologue(&prologue)
+            .map_err(noise_error)?
+            .build_initiator()
+            .map_err(noise_error)
+    }
+
     fn client_noise_frame(payload: &[u8]) -> Result<Request, crate::Error> {
         let payload = HVec::from_slice(payload).map_err(|_| crate::Error::Serialization)?;
         Ok(Request::Noise { payload })
+    }
+
+    fn client_pairing_noise_frame(payload: &[u8]) -> Result<Request, crate::Error> {
+        let payload = HVec::from_slice(payload).map_err(|_| crate::Error::Serialization)?;
+        Ok(Request::PairingNoise {
+            version: WIFI_API_VERSION,
+            payload,
+        })
+    }
+
+    async fn generate_token_from_endpoint<F>(
+        endpoint: impl Into<String>,
+        mut on_approval: F,
+    ) -> Result<Token, crate::Error>
+    where
+        F: FnMut(&str),
+    {
+        let endpoint = endpoint.into();
+        log::debug!("WiFi token generation pairing connecting to {}", endpoint);
+        let mut stream = TcpStream::connect(&endpoint)
+            .await
+            .map_err(|error| crate::Error::Debug(error.to_string()))?;
+        stream
+            .set_nodelay(true)
+            .map_err(|error| crate::Error::Debug(error.to_string()))?;
+        log::debug!("WiFi token generation pairing connected to {}", endpoint);
+
+        let mut noise = build_pairing_noise_initiator()?;
+        let mut handshake = [0u8; WIFI_FRAME_PAYLOAD_MAX_LEN];
+        let handshake_len = noise
+            .write_message(&[], &mut handshake)
+            .map_err(noise_error)?;
+        log::debug!(
+            "WiFi token generation pairing sending initiator handshake ({} bytes)",
+            handshake_len
+        );
+        write_frame(
+            &mut stream,
+            &client_pairing_noise_frame(&handshake[..handshake_len])?,
+        )
+        .await?;
+
+        log::debug!("WiFi token generation pairing waiting for responder handshake");
+        match read_frame::<_, Response>(&mut stream).await? {
+            Response::PairingNoise { payload } => {
+                log::debug!(
+                    "WiFi token generation pairing received responder handshake ({} bytes)",
+                    payload.len()
+                );
+                let mut empty_payload = [0u8; 0];
+                let len = noise
+                    .read_message(payload.as_slice(), &mut empty_payload)
+                    .map_err(noise_error)?;
+                if len != 0 {
+                    return Err(crate::Error::UnexpectedResponse);
+                }
+            }
+            Response::Error(error) => return Err(wifi_error(error)),
+            _ => return Err(crate::Error::UnexpectedResponse),
+        }
+
+        log::debug!("WiFi token generation pairing transport established");
+        let mut transport = noise.into_transport_mode().map_err(noise_error)?;
+        let deadline = Instant::now() + PAIRING_TOKEN_TIMEOUT;
+        log::debug!(
+            "WiFi token generation pairing waiting for approval/token events for up to {:?}",
+            PAIRING_TOKEN_TIMEOUT
+        );
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+            let frame =
+                match tokio::time::timeout(remaining, read_frame::<_, Response>(&mut stream)).await
+                {
+                    Ok(frame) => frame?,
+                    Err(_) => {
+                        log::debug!("WiFi token generation pairing timed out waiting for event");
+                        return Err(crate::Error::Timeout);
+                    }
+                };
+            let payload = match frame {
+                Response::PairingNoise { payload } => payload,
+                Response::Error(error) => return Err(wifi_error(error)),
+                _ => return Err(crate::Error::UnexpectedResponse),
+            };
+
+            let mut plaintext = [0u8; WIFI_MESSAGE_MAX_LEN];
+            let plaintext_len = transport
+                .read_message(payload.as_slice(), &mut plaintext)
+                .map_err(noise_error)?;
+            let message: Message = postcard::from_bytes(&plaintext[..plaintext_len])
+                .map_err(|_| crate::Error::Serialization)?;
+            let Message::Event(event) = message else {
+                return Err(crate::Error::UnexpectedResponse);
+            };
+
+            match event.event {
+                Event::Runtime(RuntimeEvent::TokenGenerateApproval(method)) => {
+                    log::debug!(
+                        "WiFi token generation pairing received approval instruction: {}",
+                        method.as_str()
+                    );
+                    on_approval(method.as_str());
+                }
+                Event::Runtime(RuntimeEvent::TokenGenerated(token)) => {
+                    log::debug!(
+                        "WiFi token generation pairing received generated token for host {}",
+                        token.host_id
+                    );
+                    return Ok(token);
+                }
+                Event::Error(error) => {
+                    log::debug!(
+                        "WiFi token generation pairing received error event: {:?}",
+                        error
+                    );
+                    return Err(error);
+                }
+                _ => return Err(crate::Error::UnexpectedResponse),
+            }
+        }
+
+        log::debug!("WiFi token generation pairing deadline elapsed");
+        Err(crate::Error::Timeout)
     }
 
     #[derive(Clone, Debug, Default)]
@@ -896,6 +1083,8 @@ mod remote {
         pub instance: String,
         pub host: String,
         pub address: Option<Ipv4Addr>,
+        pub model: Option<String>,
+        pub api_version: Option<u8>,
         pub host_id: Option<Identifier>,
         pub firmware_version: Option<String>,
         pub http_port: Option<u16>,
@@ -916,6 +1105,24 @@ mod remote {
                 host.to_owned()
             };
             Some(format!("{}:{}", host, self.port.unwrap_or(WIFI_PORT)))
+        }
+
+        pub fn is_ep01(&self) -> bool {
+            self.model
+                .as_deref()
+                .map(|model| model.eq_ignore_ascii_case("ep01"))
+                .unwrap_or_else(|| {
+                    self.instance
+                        .trim_end_matches('.')
+                        .to_ascii_lowercase()
+                        .starts_with("ep01 ")
+                })
+        }
+
+        pub fn is_token_generation_candidate(&self) -> bool {
+            self.endpoint().is_some()
+                && self.protocol.as_deref() == Some(WIFI_PROTOCOL)
+                && self.is_ep01()
         }
     }
 
@@ -1046,6 +1253,8 @@ mod remote {
                 entry.address = records.a_records.get(host).copied();
             }
             if let Some(txt) = records.txt_records.get(&instance) {
+                entry.model = txt.get("model").cloned();
+                entry.api_version = txt.get("api").and_then(|api| api.parse().ok());
                 entry.host_id = txt.get("id").and_then(|id| id.parse().ok());
                 entry.firmware_version = txt.get("firmware").or_else(|| txt.get("fw")).cloned();
                 entry.http_port = txt.get("http").and_then(|port| port.parse().ok());
@@ -1207,6 +1416,8 @@ mod remote {
             let host_id = uuid::Uuid::from_bytes([0x22u8; 16]);
             let host_id_string = host_id.to_string();
             let txt = [
+                ("model", "ep01"),
+                ("api", "1"),
                 ("id", host_id_string.as_str()),
                 ("fw", "1.2.3"),
                 ("http", "80"),
@@ -1250,6 +1461,8 @@ mod remote {
             assert_eq!(device.instance, "enody-test._enody._tcp.local.");
             assert_eq!(device.host, "enody-test.local");
             assert_eq!(device.address, Some(Ipv4Addr::new(192, 168, 1, 45)));
+            assert_eq!(device.model.as_deref(), Some("ep01"));
+            assert_eq!(device.api_version, Some(1));
             assert_eq!(device.host_id, Some(host_id));
             assert_eq!(device.firmware_version.as_deref(), Some("1.2.3"));
             assert_eq!(device.http_port, Some(80));

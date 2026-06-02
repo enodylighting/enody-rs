@@ -361,6 +361,7 @@ pub enum RuntimeEvent {
     SettingDelete(SettingKey),
     SettingReset,
     TokenGenerateStart,
+    TokenGenerateApproval(TokenApprovalMethod),
     TokenGenerated(Token),
     TokenRevoked(TokenKeyId),
 }
@@ -404,6 +405,7 @@ pub const TOKEN_STRING_MAX_LEN: usize = 64;
 pub const TOKEN_DATA_MAX_LEN: usize = 32;
 
 type TokenKeyId = String<TOKEN_STRING_MAX_LEN>;
+type TokenApprovalMethod = String<TOKEN_STRING_MAX_LEN>;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Token {

@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand};
 use enody::{
     environment::{DiscoveryEnvironment, Environment},
-    message::{Network, WifiAuth},
+    message::{Network, Token, WifiAuth},
     runtime::remote::RemoteRuntime,
     token_store::TokenStore,
     usb::UsbEnvironment,
-    wifi::WifiEnvironment,
+    wifi::{WifiConnection, WifiDiscoveredDevice, WifiEnvironment},
     Identifier,
 };
 use std::{
@@ -13,6 +13,7 @@ use std::{
     env,
     io::{self, Write},
     path::PathBuf,
+    time::Duration,
 };
 
 macro_rules! vprintln {
@@ -22,6 +23,9 @@ macro_rules! vprintln {
         }
     };
 }
+
+const WIFI_TOKEN_VERIFY_ATTEMPTS: usize = 8;
+const WIFI_TOKEN_VERIFY_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 struct DiscoveredRuntimes {
     _usb_environment: Option<UsbEnvironment>,
@@ -204,6 +208,13 @@ enum Commands {
     },
     /// Guided WiFi scan, join, and token setup through the trusted USB connection
     WifiSetup,
+
+    /// Discover an EP01 over mDNS, then generate and save a WiFi token with physical approval
+    WifiGenerateToken {
+        /// mDNS discovery timeout in milliseconds
+        #[arg(long, default_value_t = 2000)]
+        timeout_ms: u64,
+    },
 }
 
 #[tokio::main]
@@ -256,6 +267,9 @@ async fn main() -> Result<(), enody::Error> {
         Commands::SettingSet { key, value } => setting_set(&key, &value, cli.verbose).await?,
         Commands::SettingDelete { key } => setting_delete(&key, cli.verbose).await?,
         Commands::WifiSetup => wifi_setup().await?,
+        Commands::WifiGenerateToken { timeout_ms } => {
+            wifi_generate_token_from_mdns(Duration::from_millis(timeout_ms)).await?
+        }
     }
 
     Ok(())
@@ -1044,6 +1058,137 @@ async fn wifi_setup() -> Result<(), enody::Error> {
 
     println!("Generating authentication token...");
     generate_token_for_runtime(&selected.runtime).await
+}
+
+async fn wifi_generate_token_from_mdns(timeout: Duration) -> Result<(), enody::Error> {
+    println!("Searching for EP01s over mDNS...");
+    let device = select_wifi_token_generation_device(timeout).await?;
+    let endpoint = device.endpoint().ok_or(enody::Error::Argument)?;
+
+    println!("Generating WiFi token from {}.", endpoint);
+    println!("When EP01 starts pulsing, approve or cancel the request on the device.");
+
+    let token = WifiConnection::generate_token_from_discovered_device_with_approval(
+        &device,
+        |instruction| {
+            println!("Approval required: {}", instruction);
+        },
+    )
+    .await?;
+
+    println!("Token generated. Verifying authenticated WiFi connection...");
+    let host_id = verify_wifi_token_from_discovered_device(&token, &device).await?;
+
+    let path = TokenStore::save_token(&token)?;
+    println!("Verified WiFi token for device {}.", host_id);
+    println!("Saved token to {}", path.display());
+
+    Ok(())
+}
+
+async fn verify_wifi_token_from_discovered_device(
+    token: &Token,
+    device: &WifiDiscoveredDevice,
+) -> Result<Identifier, enody::Error> {
+    for attempt in 1..=WIFI_TOKEN_VERIFY_ATTEMPTS {
+        let runtime = WifiConnection::runtime_from_discovered_device(token, device)?;
+        match verify_wifi_runtime(&runtime).await {
+            Ok(host_id) => return Ok(host_id),
+            Err(error) if attempt < WIFI_TOKEN_VERIFY_ATTEMPTS => {
+                log::debug!(
+                    "WiFi token verification attempt {}/{} failed: {:?}; retrying in {:?}",
+                    attempt,
+                    WIFI_TOKEN_VERIFY_ATTEMPTS,
+                    error,
+                    WIFI_TOKEN_VERIFY_RETRY_DELAY
+                );
+                tokio::time::sleep(WIFI_TOKEN_VERIFY_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(enody::Error::Timeout)
+}
+
+async fn verify_wifi_runtime(runtime: &RemoteRuntime) -> Result<Identifier, enody::Error> {
+    runtime.connect().await?;
+    let host = runtime.host().await;
+    let disconnect = runtime.disconnect().await;
+    let host = host?;
+    disconnect?;
+    Ok(host.identifier())
+}
+
+async fn select_wifi_token_generation_device(
+    timeout: Duration,
+) -> Result<WifiDiscoveredDevice, enody::Error> {
+    let devices = WifiConnection::discover_token_generation_devices(timeout).await?;
+    match devices.len() {
+        0 => {
+            println!("No EP01s found for WiFi token generation.");
+            Err(enody::Error::InsufficientData)
+        }
+        1 => {
+            let device = devices
+                .into_iter()
+                .next()
+                .ok_or(enody::Error::InsufficientData)?;
+            println!(
+                "Found EP01 {} at {}.",
+                device
+                    .host_id
+                    .map(|host_id| host_id.to_string())
+                    .unwrap_or_else(|| "unknown host".to_string()),
+                device
+                    .endpoint()
+                    .unwrap_or_else(|| "unknown endpoint".to_string())
+            );
+            Ok(device)
+        }
+        _ => prompt_wifi_token_generation_device(devices),
+    }
+}
+
+fn prompt_wifi_token_generation_device(
+    devices: Vec<WifiDiscoveredDevice>,
+) -> Result<WifiDiscoveredDevice, enody::Error> {
+    print_wifi_token_generation_devices(&devices);
+
+    loop {
+        let input = prompt_line("Pick an EP01 number: ")?;
+        let selected = match input.trim().parse::<usize>() {
+            Ok(selected) if (1..=devices.len()).contains(&selected) => selected,
+            _ => {
+                println!("Enter a number from 1 to {}.", devices.len());
+                continue;
+            }
+        };
+
+        return Ok(devices[selected - 1].clone());
+    }
+}
+
+fn print_wifi_token_generation_devices(devices: &[WifiDiscoveredDevice]) {
+    println!("Available EP01s:");
+    for (index, device) in devices.iter().enumerate() {
+        let host_id = device
+            .host_id
+            .map(|host_id| host_id.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let endpoint = device.endpoint().unwrap_or_else(|| "unknown".to_string());
+        let firmware = device
+            .firmware_version
+            .as_deref()
+            .unwrap_or("unknown firmware");
+        println!(
+            "{:>2}. host={} endpoint={} firmware={}",
+            index + 1,
+            host_id,
+            endpoint,
+            firmware
+        );
+    }
 }
 
 fn prompt_wifi_ssid(networks: &[Network]) -> Result<String, enody::Error> {

@@ -44,4 +44,5 @@ pub enum Error {
     Timeout,
     Argument,
     Permission,
+    Canceled,
 }
