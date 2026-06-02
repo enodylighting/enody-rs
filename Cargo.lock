@@ -1037,6 +1037,7 @@ version = "0.1.9"
 dependencies = [
  "async-trait",
  "clap",
+ "dialoguer",
  "edge-mdns",
  "env_logger",
  "espflash",

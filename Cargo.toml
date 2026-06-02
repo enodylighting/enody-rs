@@ -11,7 +11,7 @@ readme = "README.md"
 default = ["remote", "cli"]
 std = ["postcard/use-std", "serde/std", "snow?/std"]
 remote = ["std", "edge-mdns", "env_logger", "tokio", "rusb", "serialport", "espflash", "reqwest", "snow", "sha2"]
-cli = ["clap", "serde_json"]
+cli = ["clap", "dialoguer", "serde_json"]
 
 [[bin]]
 name = "enody"
@@ -28,6 +28,7 @@ postcard    = { version = "1.1.1", default-features = false, features = ["heaple
 
 # Dependencies that require std
 clap        = { version = "4.5", optional = true, features = ["derive"] }
+dialoguer   = { version = "0.12.0", optional = true }
 serde_json  = { version = "1.0", optional = true }
 env_logger  = { version = "0.11.8", optional = true }
 edge-mdns   = { version = "0.7.0", default-features = false, optional = true }
