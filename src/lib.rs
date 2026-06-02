@@ -17,6 +17,7 @@ pub mod token_store;
 pub mod update;
 #[cfg(feature = "remote")]
 pub mod usb;
+pub mod wifi;
 pub type Identifier = uuid::Uuid;
 pub type Measurement = f32;
 
