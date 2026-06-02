@@ -17,11 +17,14 @@ pub mod remote {
     use crate::{
         fixture::remote::RemoteFixture,
         message::{
-            Command, CommandMessage, Event, FixtureInfo, HostCommand, HostEvent, HostInfo, Version,
+            Command, CommandMessage, Event, FixtureInfo, HostCommand, HostEvent, HostInfo, Network,
+            NetworkCredentials, Version, WifiCredentials, WifiNetwork, NETWORK_SCAN_FILTER_MAX_LEN,
+            NETWORK_SCAN_RESULT_MAX_LEN,
         },
         runtime::remote::RemoteRuntime,
         Identifier,
     };
+    use heapless::Vec as HVec;
 
     /// A host accessed via remote runtime communication.
     ///
@@ -113,6 +116,68 @@ pub mod remote {
             }
 
             Ok(fixtures)
+        }
+
+        pub async fn network_scan(
+            &self,
+            filters: HVec<Network, NETWORK_SCAN_FILTER_MAX_LEN>,
+        ) -> Result<HVec<Network, NETWORK_SCAN_RESULT_MAX_LEN>, crate::Error> {
+            let command = Command::Host(HostCommand::NetworkScan(filters));
+            let message = self
+                .remote
+                .execute_command_with_timeout(
+                    CommandMessage::root(command, Some(self.identifier())),
+                    std::time::Duration::from_secs(10),
+                )
+                .await?;
+            match message.event {
+                Event::Host(HostEvent::NetworkScanComplete(results)) => Ok(results),
+                _ => Err(crate::Error::UnexpectedResponse),
+            }
+        }
+
+        pub async fn network_join(
+            &self,
+            network: Network,
+            credentials: NetworkCredentials,
+        ) -> Result<(), crate::Error> {
+            let command = Command::Host(HostCommand::NetworkJoin(network, credentials));
+            let message = self
+                .remote
+                .execute_command_with_timeout(
+                    CommandMessage::root(command, Some(self.identifier())),
+                    std::time::Duration::from_secs(10),
+                )
+                .await?;
+            match message.event {
+                Event::Host(HostEvent::NetworkJoinComplete(_)) => Ok(()),
+                _ => Err(crate::Error::UnexpectedResponse),
+            }
+        }
+
+        pub async fn wifi_scan(
+            &self,
+        ) -> Result<HVec<Network, NETWORK_SCAN_RESULT_MAX_LEN>, crate::Error> {
+            let mut filters = HVec::new();
+            filters
+                .push(Network::Wifi(WifiNetwork::default()))
+                .map_err(|_| crate::Error::Argument)?;
+            self.network_scan(filters).await
+        }
+
+        pub async fn wifi_join(&self, ssid: &str, password: &str) -> Result<(), crate::Error> {
+            let network = Network::Wifi(WifiNetwork {
+                ssid: Some(heapless::String::try_from(ssid).map_err(|_| crate::Error::Argument)?),
+                ..WifiNetwork::default()
+            });
+            let credentials = if password.is_empty() {
+                NetworkCredentials::None
+            } else {
+                NetworkCredentials::Wifi(WifiCredentials::Password(
+                    heapless::String::try_from(password).map_err(|_| crate::Error::Argument)?,
+                ))
+            };
+            self.network_join(network, credentials).await
         }
     }
 }
