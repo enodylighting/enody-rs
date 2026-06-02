@@ -163,11 +163,16 @@ pub enum Event {
     Emitter(EmitterEvent),
 }
 
+pub const NETWORK_SCAN_FILTER_MAX_LEN: usize = 4;
+pub const NETWORK_SCAN_RESULT_MAX_LEN: usize = 16;
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum HostCommand {
     Info,
     FixtureCount,
     FixtureInfo(u32),
+    NetworkScan(Vec<Network, NETWORK_SCAN_FILTER_MAX_LEN>),
+    NetworkJoin(Network, NetworkCredentials),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -175,12 +180,51 @@ pub enum HostEvent {
     Info(HostInfo),
     FixtureCount(u32),
     FixtureInfo(FixtureInfo),
+    NetworkScanStart(Vec<Network, NETWORK_SCAN_FILTER_MAX_LEN>),
+    NetworkScanComplete(Vec<Network, NETWORK_SCAN_RESULT_MAX_LEN>),
+    NetworkJoinStart(Network),
+    NetworkJoinComplete(Network),
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct HostInfo {
     pub version: Version,
     pub identifier: Identifier,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum Network {
+    Wifi(WifiNetwork),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum NetworkCredentials {
+    None,
+    Wifi(WifiCredentials),
+}
+
+pub const WIFI_SSID_MAX_LEN: usize = 32;
+pub const WIFI_PASSWORD_MAX_LEN: usize = 64;
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum WifiAuth {
+    Unknown,
+    Open,
+    Secured,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct WifiNetwork {
+    pub ssid: Option<String<WIFI_SSID_MAX_LEN>>,
+    pub bssid: Option<[u8; 6]>,
+    pub channel: Option<u8>,
+    pub rssi: Option<i8>,
+    pub auth: Option<WifiAuth>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum WifiCredentials {
+    Password(String<WIFI_PASSWORD_MAX_LEN>),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -301,6 +345,8 @@ pub enum RuntimeCommand {
     SettingSet(SettingKey, SettingValue),
     SettingDelete(SettingKey),
     SettingReset,
+    TokenGenerate,
+    TokenRevoke(TokenKeyId),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -314,6 +360,9 @@ pub enum RuntimeEvent {
     SettingSet(SettingKey),
     SettingDelete(SettingKey),
     SettingReset,
+    TokenGenerateStart,
+    TokenGenerated(Token),
+    TokenRevoked(TokenKeyId),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -349,6 +398,18 @@ pub enum StoredSetting {
     Missing,
     Public(SettingValue),
     Private,
+}
+
+pub const TOKEN_STRING_MAX_LEN: usize = 64;
+pub const TOKEN_DATA_MAX_LEN: usize = 32;
+
+type TokenKeyId = String<TOKEN_STRING_MAX_LEN>;
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Token {
+    pub host_id: crate::Identifier,
+    pub key_id: TokenKeyId,
+    pub data: Vec<u8, TOKEN_DATA_MAX_LEN>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

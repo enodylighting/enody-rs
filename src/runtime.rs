@@ -19,7 +19,7 @@ pub mod remote {
         host::remote::RemoteHost,
         message::{
             Command, CommandMessage, Event, EventMessage, LogLevel, Message, RuntimeCommand,
-            RuntimeEvent, SettingKey, SettingValue, StoredSetting,
+            RuntimeEvent, SettingKey, SettingValue, StoredSetting, Token,
         },
         Identifier,
     };
@@ -263,6 +263,16 @@ pub mod remote {
             &self,
             command: CommandMessage,
         ) -> Result<EventMessage, crate::Error> {
+            self.execute_command_with_timeout(command, Self::COMMAND_TIMEOUT)
+                .await
+        }
+
+        /// Execute a command with a caller-provided timeout per attempt.
+        pub async fn execute_command_with_timeout(
+            &self,
+            command: CommandMessage,
+            timeout: std::time::Duration,
+        ) -> Result<EventMessage, crate::Error> {
             let command_debug = format!("{:?}", command.command);
             let original_command = command.command.clone();
             let original_resource = command.resource;
@@ -315,7 +325,7 @@ pub mod remote {
                 );
 
                 // Wait for the response with a timeout
-                match tokio::time::timeout(Self::COMMAND_TIMEOUT, response_rx).await {
+                match tokio::time::timeout(timeout, response_rx).await {
                     Ok(Ok(response)) => {
                         let elapsed = start.elapsed();
                         log::debug!(
@@ -337,7 +347,7 @@ pub mod remote {
                         log::warn!(
                             "Command {} timed out after {:?} (context={}, attempt={})",
                             command_debug,
-                            Self::COMMAND_TIMEOUT,
+                            timeout,
                             context,
                             attempt
                         );
@@ -375,6 +385,20 @@ pub mod remote {
         /// Create a RemoteHost by querying the device for its host information.
         pub async fn host(&self) -> Result<RemoteHost, crate::Error> {
             RemoteHost::from_runtime(self.clone()).await
+        }
+
+        pub async fn generate_token(&self) -> Result<Token, crate::Error> {
+            let command = Command::Runtime(RuntimeCommand::TokenGenerate);
+            let message = self
+                .execute_command_with_timeout(
+                    CommandMessage::root(command, None),
+                    std::time::Duration::from_secs(10),
+                )
+                .await?;
+            match message.event {
+                Event::Runtime(RuntimeEvent::TokenGenerated(token)) => Ok(token),
+                _ => Err(crate::Error::UnexpectedResponse),
+            }
         }
 
         pub async fn setting_get<Value>(&self, key: &str) -> Result<Value, crate::Error>

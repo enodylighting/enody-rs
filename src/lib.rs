@@ -11,6 +11,8 @@ pub mod runtime;
 pub mod serialization;
 pub mod source;
 pub mod spectral;
+#[cfg(all(feature = "std", feature = "cli"))]
+pub mod token_store;
 #[cfg(feature = "remote")]
 pub mod update;
 #[cfg(feature = "remote")]
