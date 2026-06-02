@@ -300,6 +300,7 @@ pub enum RuntimeCommand {
     SettingGet(SettingKey),
     SettingSet(SettingKey, SettingValue),
     SettingDelete(SettingKey),
+    SettingReset,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -312,6 +313,7 @@ pub enum RuntimeEvent {
     SettingGet(SettingKey, StoredSetting),
     SettingSet(SettingKey),
     SettingDelete(SettingKey),
+    SettingReset,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
