@@ -125,9 +125,15 @@ pub mod remote {
             let command = Command::Host(HostCommand::NetworkScan(filters));
             let message = self
                 .remote
-                .execute_command_with_timeout(
+                .execute_command_with_timeout_until(
                     CommandMessage::root(command, Some(self.identifier())),
                     std::time::Duration::from_secs(10),
+                    |message| {
+                        matches!(
+                            message.event,
+                            Event::Host(HostEvent::NetworkScanComplete(_))
+                        )
+                    },
                 )
                 .await?;
             match message.event {
@@ -144,9 +150,15 @@ pub mod remote {
             let command = Command::Host(HostCommand::NetworkJoin(network, credentials));
             let message = self
                 .remote
-                .execute_command_with_timeout(
+                .execute_command_with_timeout_until(
                     CommandMessage::root(command, Some(self.identifier())),
                     std::time::Duration::from_secs(10),
+                    |message| {
+                        matches!(
+                            message.event,
+                            Event::Host(HostEvent::NetworkJoinComplete(_))
+                        )
+                    },
                 )
                 .await?;
             match message.event {

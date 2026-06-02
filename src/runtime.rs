@@ -32,7 +32,7 @@ pub mod remote {
             Arc,
         },
     };
-    use tokio::sync::{oneshot, Mutex as AsyncMutex};
+    use tokio::sync::{mpsc, Mutex as AsyncMutex};
     use tokio::task::JoinHandle;
 
     /// Trait for providing message transport to a remote runtime.
@@ -66,7 +66,7 @@ pub mod remote {
     #[derive(Debug)]
     struct CommandResponseRegistration {
         context: Identifier,
-        response_tx: Option<oneshot::Sender<EventMessage>>,
+        response_tx: mpsc::Sender<EventMessage>,
     }
 
     /// Shared internal state for RemoteRuntime.
@@ -144,9 +144,36 @@ pub mod remote {
 
         async fn remove_pending_registration(inner: &RemoteRuntimeInner, context: &Identifier) {
             let mut pending = inner.pending_commands.lock().await;
-            pending.retain(|registration| {
-                registration.context != *context && registration.response_tx.is_some()
-            });
+            pending.retain(|registration| registration.context != *context);
+        }
+
+        fn forward_unmatched_message(inner: &RemoteRuntimeInner, message: Message) -> bool {
+            if let Message::Event(ref event) = message {
+                if let Event::Runtime(RuntimeEvent::Log(ref log_event)) = event.event {
+                    if inner.logging_enabled.load(Ordering::Relaxed) {
+                        match log_event.level {
+                            LogLevel::Error => log::error!("{}", log_event.output),
+                            LogLevel::Warn => log::warn!("{}", log_event.output),
+                            LogLevel::Info => log::info!("{}", log_event.output),
+                            LogLevel::Debug => log::debug!("{}", log_event.output),
+                            LogLevel::Trace => log::trace!("{}", log_event.output),
+                        }
+                        return true;
+                    }
+                }
+            }
+
+            match inner.message_tx.try_send(message) {
+                Ok(_) => true,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    log::trace!("Unmatched message channel full, dropping message");
+                    true
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    log::trace!("Message channel closed, dispatch task ending");
+                    false
+                }
+            }
         }
 
         /// Background task that receives messages from the connection and dispatches them.
@@ -163,59 +190,29 @@ pub mod remote {
                     }
                 };
 
-                // Check if this is a response to a pending command
-                if let Message::Event(ref event) = message {
-                    if let Some(context) = &event.context {
-                        let mut pending = inner.pending_commands.lock().await;
+                if let Message::Event(event) = &message {
+                    if let Some(context) = event.context {
+                        let response_tx = {
+                            let mut pending = inner.pending_commands.lock().await;
+                            pending.retain(|registration| !registration.response_tx.is_closed());
+                            pending
+                                .iter()
+                                .find(|registration| registration.context == context)
+                                .map(|registration| registration.response_tx.clone())
+                        };
 
-                        // Find and fulfill matching registration
-                        let mut matched = false;
-                        for registration in pending.iter_mut() {
-                            if registration.context == *context {
-                                if let Some(tx) = registration.response_tx.take() {
-                                    let _ = tx.send(event.clone());
-                                    matched = true;
-                                }
-                                break;
+                        if let Some(response_tx) = response_tx {
+                            if response_tx.send(event.clone()).await.is_ok() {
+                                continue;
                             }
-                        }
 
-                        // Clean up fulfilled registrations
-                        pending.retain(|r| r.response_tx.is_some());
-
-                        if matched {
-                            continue; // Don't forward matched responses to message channel
-                        }
-                    }
-
-                    // Handle Log events if logging is enabled
-                    if let Event::Runtime(RuntimeEvent::Log(ref log_event)) = event.event {
-                        if inner.logging_enabled.load(Ordering::Relaxed) {
-                            match log_event.level {
-                                LogLevel::Error => log::error!("{}", log_event.output),
-                                LogLevel::Warn => log::warn!("{}", log_event.output),
-                                LogLevel::Info => log::info!("{}", log_event.output),
-                                LogLevel::Debug => log::debug!("{}", log_event.output),
-                                LogLevel::Trace => log::trace!("{}", log_event.output),
-                            }
-                            continue; // Don't forward log events to message channel when logging is enabled
+                            Self::remove_pending_registration(&inner, &context).await;
                         }
                     }
                 }
 
-                // Forward unmatched messages to the channel.
-                // Use try_send to avoid blocking the dispatch loop when the
-                // channel is full (e.g. nobody is calling next_message()).
-                // Blocking here would stall command-response delivery.
-                match inner.message_tx.try_send(message) {
-                    Ok(_) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                        log::trace!("Unmatched message channel full, dropping message");
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        log::trace!("Message channel closed, dispatch task ending");
-                        break;
-                    }
+                if !Self::forward_unmatched_message(&inner, message) {
+                    break;
                 }
             }
         }
@@ -253,12 +250,10 @@ pub mod remote {
         /// Default timeout for a single command attempt.
         const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
-        /// Maximum number of retry attempts for a command.
-        const COMMAND_MAX_RETRIES: u32 = 3;
+        const COMMAND_EVENT_BUFFER: usize = 16;
 
         /// This method sends a command and blocks until the corresponding
         /// response event is received, matching by context identifier.
-        /// Retries automatically on timeout.
         pub async fn execute_command(
             &self,
             command: CommandMessage,
@@ -273,91 +268,85 @@ pub mod remote {
             command: CommandMessage,
             timeout: std::time::Duration,
         ) -> Result<EventMessage, crate::Error> {
+            self.execute_command_with_timeout_until(command, timeout, |_| true)
+                .await
+        }
+
+        /// Execute a command and wait until a context-matched event satisfies
+        /// `is_terminal`. Intermediate context events are forwarded to
+        /// `next_message()` and the timeout covers the whole execution window.
+        pub async fn execute_command_with_timeout_until<F>(
+            &self,
+            command: CommandMessage,
+            timeout: std::time::Duration,
+            mut is_terminal: F,
+        ) -> Result<EventMessage, crate::Error>
+        where
+            F: FnMut(&EventMessage) -> bool,
+        {
             let command_debug = format!("{:?}", command.command);
-            let original_command = command.command.clone();
-            let original_resource = command.resource;
+            let context = command.identifier;
+            let (response_tx, mut response_rx) = mpsc::channel(Self::COMMAND_EVENT_BUFFER);
 
-            for attempt in 0..=Self::COMMAND_MAX_RETRIES {
-                // Create a fresh command message for each attempt (new context UUID)
-                let attempt_command = if attempt == 0 {
-                    command.clone()
-                } else {
-                    log::debug!(
-                        "Retrying command {} (attempt {}/{})",
-                        command_debug,
-                        attempt + 1,
-                        Self::COMMAND_MAX_RETRIES + 1
-                    );
-                    // Small backoff before retry
-                    tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
-                    CommandMessage::root(original_command.clone(), original_resource)
-                };
-
-                let context = attempt_command.identifier;
-                let (response_tx, response_rx) = oneshot::channel();
-
-                // Register for the response
-                {
-                    let mut pending = self.inner.pending_commands.lock().await;
-                    pending.push(CommandResponseRegistration {
-                        context,
-                        response_tx: Some(response_tx),
-                    });
-                }
-
-                // Send the command
-                let start = std::time::Instant::now();
-                log::trace!(
-                    "Sending command {} (context={}, attempt={})",
-                    command_debug,
+            {
+                let mut pending = self.inner.pending_commands.lock().await;
+                pending.push(CommandResponseRegistration {
                     context,
-                    attempt
-                );
-                let message = Message::Command(attempt_command);
-                if let Err(error) = self.inner.connection.send_message(message).await {
-                    Self::remove_pending_registration(&self.inner, &context).await;
-                    return Err(error);
-                }
-                log::trace!(
-                    "Command {} sent, awaiting response (context={})",
-                    command_debug,
-                    context
-                );
+                    response_tx,
+                });
+            }
 
-                // Wait for the response with a timeout
-                match tokio::time::timeout(timeout, response_rx).await {
-                    Ok(Ok(response)) => {
-                        let elapsed = start.elapsed();
-                        log::debug!(
-                            "Command {} completed in {} ms (context={}, attempt={})",
-                            command_debug,
-                            (elapsed.as_micros() as f32 / 1000.0),
-                            context,
-                            attempt
-                        );
-                        return Ok(response);
+            let start = std::time::Instant::now();
+            let deadline = tokio::time::Instant::now() + timeout;
+            log::trace!("Sending command {} (context={})", command_debug, context);
+            let message = Message::Command(command);
+            if let Err(error) = self.inner.connection.send_message(message).await {
+                Self::remove_pending_registration(&self.inner, &context).await;
+                return Err(error);
+            }
+
+            loop {
+                match tokio::time::timeout_at(deadline, response_rx.recv()).await {
+                    Ok(Some(response)) => {
+                        if response.context.as_ref() == Some(&context) {
+                            if let Event::Error(error) = &response.event {
+                                Self::remove_pending_registration(&self.inner, &context).await;
+                                return Err(error.clone());
+                            }
+                        }
+
+                        if is_terminal(&response) {
+                            Self::remove_pending_registration(&self.inner, &context).await;
+                            let elapsed = start.elapsed();
+                            log::debug!(
+                                "Command {} completed in {} ms (context={})",
+                                command_debug,
+                                (elapsed.as_micros() as f32 / 1000.0),
+                                context,
+                            );
+                            return Ok(response);
+                        }
+
+                        Self::forward_unmatched_message(&self.inner, Message::Event(response));
                     }
-                    Ok(Err(_)) => {
+                    Ok(None) => {
                         Self::remove_pending_registration(&self.inner, &context).await;
                         return Err(crate::Error::Debug(
                             "command response channel closed".to_string(),
                         ));
                     }
                     Err(_) => {
+                        Self::remove_pending_registration(&self.inner, &context).await;
                         log::warn!(
-                            "Command {} timed out after {:?} (context={}, attempt={})",
+                            "Command {} timed out after {:?} (context={})",
                             command_debug,
                             timeout,
                             context,
-                            attempt
                         );
-                        Self::remove_pending_registration(&self.inner, &context).await;
-                        // Continue to next retry attempt
+                        return Err(crate::Error::Timeout);
                     }
                 }
             }
-
-            Err(crate::Error::Timeout)
         }
 
         /// Send a command message (fire-and-forget).
@@ -390,9 +379,15 @@ pub mod remote {
         pub async fn generate_token(&self) -> Result<Token, crate::Error> {
             let command = Command::Runtime(RuntimeCommand::TokenGenerate);
             let message = self
-                .execute_command_with_timeout(
+                .execute_command_with_timeout_until(
                     CommandMessage::root(command, None),
                     std::time::Duration::from_secs(10),
+                    |message| {
+                        matches!(
+                            message.event,
+                            Event::Runtime(RuntimeEvent::TokenGenerated(_))
+                        )
+                    },
                 )
                 .await?;
             match message.event {
