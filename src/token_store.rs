@@ -19,12 +19,24 @@ impl TokenStore {
             return Ok(PathBuf::from(config_home).join("enody"));
         }
 
-        let home = env::var_os("HOME")
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                crate::Error::Debug("XDG_CONFIG_HOME or HOME is required".to_string())
-            })?;
-        Ok(PathBuf::from(home).join(".enody"))
+        let home = env::var_os("HOME").filter(|value| !value.is_empty());
+        if let Some(home) = home {
+            return Ok(PathBuf::from(home).join(".enody"));
+        }
+
+        let userprofile = env::var_os("USERPROFILE").filter(|value| !value.is_empty());
+        if let Some(userprofile) = userprofile {
+            return Ok(PathBuf::from(userprofile).join(".enody"));
+        }
+
+        let appdata = env::var_os("APPDATA").filter(|value| !value.is_empty());
+        if let Some(appdata) = appdata {
+            return Ok(PathBuf::from(appdata).join("enody"));
+        }
+
+        Err(crate::Error::Debug(
+            "XDG_CONFIG_HOME, HOME, APPDATA, or USERPROFILE is required".to_string(),
+        ))
     }
 
     pub fn path() -> Result<PathBuf, crate::Error> {

@@ -72,6 +72,7 @@ mod remote {
         HostQuestions, MdnsError, NameSlice, PeerAnswer,
     };
     use serde::de::DeserializeOwned;
+    use socket2::{Domain, Protocol, SockAddr, Socket, Type};
     use std::{
         collections::{HashMap, HashSet},
         fmt,
@@ -94,6 +95,8 @@ mod remote {
     const WIFI_RUNTIME_EVENT_CHANNEL_SIZE: usize = 16;
     const WIFI_SERVICE_LABELS: &[&str] = &["_enody", "_tcp", "local"];
     const WIFI_SERVICE_SUFFIX: &str = "._enody._tcp.local";
+    const MDNS_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+    const MDNS_PORT: u16 = 5353;
     const NOISE_PROLOGUE_LABEL: &[u8] = b"enody-v1 noise";
     const PAIRING_NOISE_PROLOGUE_LABEL: &[u8] = b"enody-v1 pairing";
     const PAIRING_TOKEN_TIMEOUT: Duration = Duration::from_secs(45);
@@ -172,7 +175,15 @@ mod remote {
             let excluded_host_ids: HashSet<Identifier> = excluded_host_ids.into_iter().collect();
             let mut connected_runtimes = Vec::new();
 
-            if !tokens.is_empty() {
+            if tokens.is_empty() {
+                log::debug!(
+                    "Skipping WiFi mDNS discovery because no saved WiFi tokens are available"
+                );
+            } else {
+                log::debug!(
+                    "Discovering WiFi runtimes over mDNS using {} saved token(s)",
+                    tokens.len()
+                );
                 let devices = discover(timeout).await?;
                 let mut seen_host_ids = HashSet::new();
 
@@ -1127,38 +1138,256 @@ mod remote {
     }
 
     pub async fn discover(timeout: Duration) -> Result<Vec<WifiDiscoveredDevice>, crate::Error> {
-        let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
-            .await
-            .map_err(|error| crate::Error::Debug(error.to_string()))?;
         let query_id_bytes = uuid::Uuid::new_v4();
         let query_id =
             u16::from_be_bytes([query_id_bytes.as_bytes()[0], query_id_bytes.as_bytes()[1]]);
         let query = build_mdns_ptr_query(query_id)?;
-        socket
-            .send_to(
-                &query,
-                SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 251), 5353),
-            )
-            .await
-            .map_err(|error| crate::Error::Debug(error.to_string()))?;
+        let interfaces = mdns_outbound_interfaces();
+        let multicast_addr = SocketAddrV4::new(MDNS_MULTICAST_ADDR, MDNS_PORT);
+        let mut sockets = Vec::new();
+        log::debug!(
+            "Sending mDNS query for _enody._tcp.local with timeout {:?} on {} interface(s)",
+            timeout,
+            interfaces.len()
+        );
+
+        for interface in interfaces {
+            let socket = match create_mdns_socket(interface) {
+                Ok(socket) => socket,
+                Err(error) => {
+                    log::debug!(
+                        "Failed to create mDNS socket for interface {}: {:?}",
+                        interface,
+                        error
+                    );
+                    continue;
+                }
+            };
+
+            match socket.send_to(&query, multicast_addr).await {
+                Ok(len) => {
+                    log::trace!(
+                        "Sent {} byte mDNS PTR query on interface {}",
+                        len,
+                        interface
+                    );
+                    sockets.push((interface, socket));
+                }
+                Err(error) => {
+                    log::debug!(
+                        "Failed to send mDNS query on interface {}: {}",
+                        interface,
+                        error
+                    );
+                }
+            }
+        }
+
+        if sockets.is_empty() {
+            return Err(crate::Error::Debug(
+                "failed to send mDNS query on any interface".to_string(),
+            ));
+        }
 
         let started = Instant::now();
         let mut devices: HashMap<String, WifiDiscoveredDevice> = HashMap::new();
-        let mut buffer = [0u8; 2048];
+        let (packet_tx, mut packet_rx) = mpsc::channel::<Vec<u8>>(sockets.len() * 4);
+        let mut receive_tasks = Vec::new();
+
+        for (interface, socket) in sockets {
+            let packet_tx = packet_tx.clone();
+            receive_tasks.push(tokio::spawn(async move {
+                let mut buffer = [0u8; 2048];
+                while let Some(remaining) = timeout.checked_sub(started.elapsed()) {
+                    match tokio::time::timeout(remaining, socket.recv_from(&mut buffer)).await {
+                        Ok(Ok((len, _))) => {
+                            if packet_tx.send(buffer[..len].to_vec()).await.is_err() {
+                                break;
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            log::debug!(
+                                "Failed to receive mDNS response on interface {}: {}",
+                                interface,
+                                error
+                            );
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }));
+        }
+        drop(packet_tx);
 
         while let Some(remaining) = timeout.checked_sub(started.elapsed()) {
-            match tokio::time::timeout(remaining, socket.recv_from(&mut buffer)).await {
-                Ok(Ok((len, _))) => {
-                    if let Err(error) = collect_mdns_devices(&buffer[..len], &mut devices) {
+            match tokio::time::timeout(remaining, packet_rx.recv()).await {
+                Ok(Some(packet)) => {
+                    if let Err(error) = collect_mdns_devices(&packet, &mut devices) {
                         log::trace!("Ignoring malformed mDNS response: {:?}", error);
                     }
                 }
-                Ok(Err(error)) => return Err(crate::Error::Debug(error.to_string())),
+                Ok(None) => break,
                 Err(_) => break,
             }
         }
 
-        Ok(devices.into_values().collect())
+        for task in receive_tasks {
+            task.abort();
+            let _ = task.await;
+        }
+
+        let devices: Vec<_> = devices.into_values().collect();
+        log::debug!(
+            "mDNS discovery found {} Enody service candidate(s)",
+            devices.len()
+        );
+        Ok(devices)
+    }
+
+    fn create_mdns_socket(interface: Ipv4Addr) -> Result<UdpSocket, crate::Error> {
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+            .map_err(|error| crate::Error::Debug(error.to_string()))?;
+        socket
+            .set_reuse_address(true)
+            .map_err(|error| crate::Error::Debug(error.to_string()))?;
+        socket
+            .bind(&SockAddr::from(SocketAddrV4::new(interface, 0)))
+            .map_err(|error| crate::Error::Debug(error.to_string()))?;
+        if !interface.is_unspecified() {
+            socket
+                .set_multicast_if_v4(&interface)
+                .map_err(|error| crate::Error::Debug(error.to_string()))?;
+        }
+        // mDNS requires packets to be sent with an IP TTL of 255.
+        socket
+            .set_multicast_ttl_v4(255)
+            .map_err(|error| crate::Error::Debug(error.to_string()))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|error| crate::Error::Debug(error.to_string()))?;
+
+        let socket: std::net::UdpSocket = socket.into();
+        UdpSocket::from_std(socket).map_err(|error| crate::Error::Debug(error.to_string()))
+    }
+
+
+    fn mdns_outbound_interfaces() -> Vec<Ipv4Addr> {
+        let mut interfaces = Vec::new();
+
+        #[cfg(windows)]
+        {
+            let mut windows_interfaces = windows_mdns_outbound_interfaces();
+            interfaces.append(&mut windows_interfaces);
+        }
+
+        if interfaces.is_empty() {
+            interfaces.push(Ipv4Addr::UNSPECIFIED);
+        }
+        interfaces
+    }
+
+    #[cfg(windows)]
+    /// Query and configure network interfaces on Windows computers
+    /// for mDNS. This method was fully implemented by an LLM as I do
+    /// not know the internals of Windows networking and do not care to learn.
+    fn windows_mdns_outbound_interfaces() -> Vec<Ipv4Addr> {
+        use windows_sys::Win32::{
+            Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_SUCCESS},
+            NetworkManagement::{
+                IpHelper::{
+                    GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
+                    GAA_FLAG_SKIP_MULTICAST, IF_TYPE_SOFTWARE_LOOPBACK, IF_TYPE_TUNNEL,
+                    IP_ADAPTER_ADDRESSES_LH, IP_ADAPTER_IPV4_ENABLED, IP_ADAPTER_NO_MULTICAST,
+                },
+                Ndis::IfOperStatusUp,
+            },
+            Networking::WinSock::{AF_INET, SOCKADDR_IN},
+        };
+
+        let mut size = 15 * 1024u32;
+        let mut buffer = vec![0u8; size as usize];
+        let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+
+        let mut result = unsafe {
+            GetAdaptersAddresses(
+                AF_INET as u32,
+                flags,
+                std::ptr::null(),
+                buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>(),
+                &mut size,
+            )
+        };
+
+        if result == ERROR_BUFFER_OVERFLOW {
+            buffer.resize(size as usize, 0);
+            result = unsafe {
+                GetAdaptersAddresses(
+                    AF_INET as u32,
+                    flags,
+                    std::ptr::null(),
+                    buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>(),
+                    &mut size,
+                )
+            };
+        }
+
+        if result != ERROR_SUCCESS {
+            log::debug!("GetAdaptersAddresses failed with Windows error {}", result);
+            return Vec::new();
+        }
+
+        let mut interfaces = Vec::new();
+        let mut adapter = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+        while !adapter.is_null() {
+            let adapter_ref = unsafe { &*adapter };
+            let adapter_flags = unsafe { adapter_ref.Anonymous2.Flags };
+            let multicast_capable = adapter_flags & IP_ADAPTER_NO_MULTICAST == 0;
+            let ipv4_enabled = adapter_flags & IP_ADAPTER_IPV4_ENABLED != 0;
+            let usable_adapter = adapter_ref.OperStatus == IfOperStatusUp
+                && adapter_ref.IfType != IF_TYPE_SOFTWARE_LOOPBACK
+                && adapter_ref.IfType != IF_TYPE_TUNNEL
+                && multicast_capable
+                && ipv4_enabled;
+
+            if usable_adapter {
+                let mut unicast = adapter_ref.FirstUnicastAddress;
+                while !unicast.is_null() {
+                    let socket_address = unsafe { (*unicast).Address };
+                    if !socket_address.lpSockaddr.is_null()
+                        && socket_address.iSockaddrLength as usize
+                            >= std::mem::size_of::<SOCKADDR_IN>()
+                    {
+                        let sockaddr =
+                            unsafe { &*(socket_address.lpSockaddr.cast::<SOCKADDR_IN>()) };
+                        if sockaddr.sin_family == AF_INET {
+                            let address = Ipv4Addr::from(unsafe {
+                                sockaddr.sin_addr.S_un.S_addr.to_ne_bytes()
+                            });
+                            if !address.is_loopback()
+                                && !address.is_link_local()
+                                && !interfaces.contains(&address)
+                            {
+                                interfaces.push(address);
+                            }
+                        }
+                    }
+                    unicast = unsafe { (*unicast).Next };
+                }
+            }
+
+            adapter = adapter_ref.Next;
+        }
+
+        log::debug!(
+            "Windows mDNS outbound interfaces: {}",
+            interfaces
+                .iter()
+                .map(Ipv4Addr::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        interfaces
     }
 
     fn build_mdns_ptr_query(query_id: u16) -> Result<Vec<u8>, crate::Error> {
