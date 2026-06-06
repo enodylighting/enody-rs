@@ -9,6 +9,7 @@ use crate::{
 };
 use serde::Deserialize;
 use std::{
+    borrow::Cow,
     io::{self, Write as _},
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -239,8 +240,13 @@ impl EP01UpdateTarget {
         use espflash::cli::EspflashProgress;
         use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
         use espflash::flasher::Flasher;
+        use espflash::image_format::Segment;
         use espflash::target::Chip;
         use serialport::FlowControl;
+
+        if payloads.is_empty() {
+            return Ok(());
+        }
 
         let (port_name, port_info) = self.preferred_port();
 
@@ -251,7 +257,7 @@ impl EP01UpdateTarget {
 
         let connection = Connection::new(
             serial,
-            port_info,
+            port_info.clone(),
             ResetAfterOperation::HardReset,
             ResetBeforeOperation::DefaultReset,
             115_200,
@@ -268,6 +274,7 @@ impl EP01UpdateTarget {
 
         let mut progress = EspflashProgress::default();
 
+        let mut segments = Vec::with_capacity(payloads.len());
         for (i, (offset, data)) in payloads.iter().enumerate() {
             println!(
                 "  Writing payload {}/{} ({} bytes at offset {:#x})...",
@@ -276,15 +283,44 @@ impl EP01UpdateTarget {
                 data.len(),
                 offset
             );
-            flasher
-                .write_bin_to_flash(*offset, data, &mut progress)
-                .map_err(|e| Error::Debug(format!("Failed to flash firmware: {:?}", e)))?;
+
+            let mut segment = Segment {
+                addr: *offset,
+                data: Cow::Borrowed(data.as_slice()),
+            };
+            let size = segment.data.len();
+            if size % 4 != 0 {
+                segment.data.to_mut().resize(size + (4 - size % 4), 0xFF);
+            }
+            segments.push(segment);
         }
 
         flasher
-            .connection()
-            .reset()
-            .map_err(|e| Error::Debug(format!("Failed to reset device after flash: {:?}", e)))?;
+            .write_bins_to_flash(&segments, &mut progress)
+            .map_err(|e| Error::Debug(format!("Failed to flash firmware: {:?}", e)))?;
+
+        drop(flasher);
+        std::thread::sleep(Duration::from_millis(300));
+
+        let serial = serialport::new(&port_name, 115_200)
+            .flow_control(FlowControl::None)
+            .open_native()
+            .map_err(|e| {
+                Error::Debug(format!("Failed to reopen serial port {}: {e}", port_name))
+            })?;
+        let mut connection = Connection::new(
+            serial,
+            port_info,
+            ResetAfterOperation::HardReset,
+            ResetBeforeOperation::NoResetNoSync,
+            115_200,
+        );
+        connection.reset().map_err(|e| {
+            Error::Debug(format!(
+                "Failed to reset device into running mode after flash: {:?}",
+                e
+            ))
+        })?;
 
         Ok(())
     }
