@@ -1,3 +1,8 @@
+//! Source-level traits and remote source handles.
+//!
+//! A source is an independently controllable region within a fixture. Sources
+//! can display their own computed configuration or expose individual emitters.
+
 use alloc::boxed::Box;
 
 use crate::{
@@ -9,16 +14,22 @@ use crate::{
 /// Represents a light source containing one or more emitters.
 #[allow(clippy::result_large_err)]
 pub trait Source: Send + Sync {
+    /// Returns the stable source identifier.
     fn identifier(&self) -> Identifier;
+
+    /// Displays a configuration at a target flux on the source.
     fn display(
         &mut self,
         config: Configuration,
         target_flux: Flux,
     ) -> Result<(Configuration, Flux), Error>;
+
+    /// Returns the emitters contained by this source.
     fn emitters(&self) -> &[Box<dyn Emitter>];
 }
 
 #[cfg(feature = "remote")]
+/// Remote source handles.
 pub mod remote {
     use crate::{
         emitter::remote::RemoteEmitter,
@@ -34,6 +45,7 @@ pub mod remote {
     ///
     /// RemoteSource wraps a cloned RemoteRuntime and provides access to
     /// source operations through the command/event protocol.
+    /// Source accessed through a [`RemoteRuntime`].
     pub struct RemoteSource {
         info: SourceInfo,
         remote: RemoteRuntime,

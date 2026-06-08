@@ -1,49 +1,85 @@
+//! WiFi wire protocol and host-side WiFi discovery/authentication.
+//!
+//! The always-available types in this module are postcard-serialized request
+//! and response frames used by the WiFi API. With the `remote` feature enabled,
+//! the module also exports `WifiEnvironment`, `WifiConnection`, and
+//! `WifiDiscoveredDevice` for mDNS discovery, authenticated Noise transport,
+//! and WiFi token pairing.
+
 use crate::message::TOKEN_STRING_MAX_LEN;
 use heapless::{String as HString, Vec as HVec};
 use serde::{Deserialize, Serialize};
 
+/// Default TCP port for the WiFi API.
 pub const WIFI_PORT: u16 = 8788;
+/// Supported WiFi API version.
 pub const WIFI_API_VERSION: u8 = 1;
+/// Maximum plaintext SDK message size carried inside a WiFi frame.
 pub const WIFI_MESSAGE_MAX_LEN: usize = 2048;
+/// Maximum encrypted Noise payload size carried inside a WiFi frame.
 pub const WIFI_FRAME_PAYLOAD_MAX_LEN: usize = WIFI_MESSAGE_MAX_LEN + NOISE_TAG_LEN;
+/// mDNS TXT protocol value for compatible devices.
 pub const WIFI_PROTOCOL: &str = "enody-v1";
+/// mDNS TXT auth value for PSK-authenticated WiFi control.
 pub const WIFI_AUTH: &str = "noise-psk";
+/// Noise pattern used for authenticated WiFi control.
 pub const WIFI_NOISE: &str = "Noise_NNpsk0_25519_ChaChaPoly_SHA256";
+/// Noise pattern used for unauthenticated token pairing.
 pub const WIFI_PAIRING_NOISE: &str = "Noise_NN_25519_ChaChaPoly_SHA256";
 
 const NOISE_TAG_LEN: usize = 16;
 
+/// Error returned by the WiFi API before or during encrypted transport.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum WifiError {
+    /// Request could not be decoded or was malformed.
     BadRequest,
+    /// Token or Noise authentication failed.
     Unauthorized,
+    /// API version is not supported.
     UnsupportedVersion,
+    /// Runtime rejected the request.
     Runtime,
 }
 
+/// Client request frame for the WiFi API.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Request {
+    /// Pairing Noise handshake or encrypted pairing payload.
     PairingNoise {
+        /// Requested API version.
         version: u8,
+        /// Noise handshake or transport payload.
         payload: HVec<u8, WIFI_FRAME_PAYLOAD_MAX_LEN>,
     },
+    /// Authenticated-control hello containing the token key identifier.
     Hello {
+        /// Requested API version.
         version: u8,
+        /// Token key identifier.
         key_id: HString<TOKEN_STRING_MAX_LEN>,
     },
+    /// Authenticated encrypted SDK message payload.
     Noise {
+        /// Noise transport payload.
         payload: HVec<u8, WIFI_FRAME_PAYLOAD_MAX_LEN>,
     },
 }
 
+/// Device response frame for the WiFi API.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Response {
+    /// Pairing Noise handshake or encrypted pairing payload.
     PairingNoise {
+        /// Noise handshake or transport payload.
         payload: HVec<u8, WIFI_FRAME_PAYLOAD_MAX_LEN>,
     },
+    /// Authenticated encrypted SDK message payload.
     Noise {
+        /// Noise transport payload.
         payload: HVec<u8, WIFI_FRAME_PAYLOAD_MAX_LEN>,
     },
+    /// WiFi API error.
     Error(WifiError),
 }
 
@@ -241,6 +277,10 @@ mod remote {
             Some(connected_guard.remove(index).runtime)
         }
 
+        /// Exclude and disconnect a host that is already represented elsewhere.
+        ///
+        /// This is useful when USB discovery has found the same product and the
+        /// application wants to avoid duplicate runtimes.
         pub async fn exclude_host_id(&self, host_id: Identifier) {
             let inserted = {
                 let mut excluded_guard = self.excluded_host_ids.lock().unwrap();
@@ -279,6 +319,7 @@ mod remote {
             }
         }
 
+        /// Remove a host identifier from the exclusion list.
         pub fn remove_excluded_host_id(&self, host_id: Identifier) {
             let mut excluded_guard = self.excluded_host_ids.lock().unwrap();
             excluded_guard.remove(&host_id);
@@ -595,6 +636,10 @@ mod remote {
         read_task: JoinHandle<Result<(), crate::Error>>,
     }
 
+    /// Authenticated TCP/Noise connection to one WiFi runtime.
+    ///
+    /// Construct this from a saved [`Token`](crate::message::Token), then wrap
+    /// it in [`RemoteRuntime`] or use the `runtime_from_*` constructors.
     pub struct WifiConnection {
         endpoint: String,
         identifier: Identifier,
@@ -614,6 +659,7 @@ mod remote {
     }
 
     impl WifiConnection {
+        /// Creates a WiFi connection for a known endpoint such as `"host:8788"`.
         pub fn from_endpoint(
             token: &Token,
             endpoint: impl Into<String>,
@@ -633,6 +679,7 @@ mod remote {
             })
         }
 
+        /// Creates a WiFi connection from an mDNS-discovered device.
         pub fn from_discovered_device(
             token: &Token,
             device: &WifiDiscoveredDevice,
@@ -641,6 +688,7 @@ mod remote {
             Self::from_endpoint(token, endpoint)
         }
 
+        /// Creates a remote runtime for a known WiFi endpoint.
         pub fn runtime_from_endpoint(
             token: &Token,
             endpoint: impl Into<String>,
@@ -650,6 +698,7 @@ mod remote {
             )?)))
         }
 
+        /// Creates a remote runtime from an mDNS-discovered device.
         pub fn runtime_from_discovered_device(
             token: &Token,
             device: &WifiDiscoveredDevice,
@@ -1089,22 +1138,35 @@ mod remote {
         Err(crate::Error::Timeout)
     }
 
+    /// Device advertised over mDNS as `_enody._tcp.local`.
     #[derive(Clone, Debug, Default)]
     pub struct WifiDiscoveredDevice {
+        /// mDNS service instance name.
         pub instance: String,
+        /// Host name advertised by mDNS.
         pub host: String,
+        /// Resolved IPv4 address, when available.
         pub address: Option<Ipv4Addr>,
+        /// Product model TXT value.
         pub model: Option<String>,
+        /// WiFi API version TXT value.
         pub api_version: Option<u8>,
+        /// Host identifier TXT value.
         pub host_id: Option<Identifier>,
+        /// Firmware version TXT value.
         pub firmware_version: Option<String>,
+        /// Optional HTTP port TXT value.
         pub http_port: Option<u16>,
+        /// WiFi API TCP port TXT value.
         pub port: Option<u16>,
+        /// Protocol TXT value.
         pub protocol: Option<String>,
+        /// Authentication TXT value.
         pub auth: Option<String>,
     }
 
     impl WifiDiscoveredDevice {
+        /// Returns a `host:port` endpoint suitable for [`WifiConnection`].
         pub fn endpoint(&self) -> Option<String> {
             let host = if let Some(address) = self.address {
                 address.to_string()
@@ -1118,6 +1180,7 @@ mod remote {
             Some(format!("{}:{}", host, self.port.unwrap_or(WIFI_PORT)))
         }
 
+        /// Returns whether this advertisement appears to be an EP01.
         pub fn is_ep01(&self) -> bool {
             self.model
                 .as_deref()
@@ -1130,6 +1193,7 @@ mod remote {
                 })
         }
 
+        /// Returns whether this device can be used for WiFi token pairing.
         pub fn is_token_generation_candidate(&self) -> bool {
             self.endpoint().is_some()
                 && self.protocol.as_deref() == Some(WIFI_PROTOCOL)
@@ -1270,7 +1334,6 @@ mod remote {
         let socket: std::net::UdpSocket = socket.into();
         UdpSocket::from_std(socket).map_err(|error| crate::Error::Debug(error.to_string()))
     }
-
 
     fn mdns_outbound_interfaces() -> Vec<Ipv4Addr> {
         let mut interfaces = Vec::new();

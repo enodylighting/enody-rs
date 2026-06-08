@@ -1,6 +1,13 @@
+//! Serialization and USB frame parsing.
+//!
+//! Messages are postcard-serialized and wrapped in STX/ETX frames. STX, ETX,
+//! and DLE bytes inside the payload are escaped by prefixing DLE.
+
 #[cfg(feature = "std")]
+/// Transport byte buffer used by USB framing when `std` is enabled.
 pub type UsbDataBuffer = Vec<u8>;
 #[cfg(not(feature = "std"))]
+/// Fixed-capacity transport byte buffer used by USB framing in `no_std` builds.
 pub type UsbDataBuffer = heapless::Vec<u8, 512>;
 
 macro_rules! buffer_push {
@@ -12,10 +19,14 @@ macro_rules! buffer_push {
     };
 }
 
+/// Start-of-text frame delimiter.
 pub const CONTROL_CHAR_STX: u8 = 0x02;
+/// End-of-text frame delimiter.
 pub const CONTROL_CHAR_ETX: u8 = 0x03;
+/// Data-link-escape byte used to escape delimiter bytes in payloads.
 pub const CONTROL_CHAR_DLE: u8 = 0x10;
 
+/// Minimum valid frame size: STX plus ETX.
 pub const FRAME_SIZE_MIN: usize = 2; // (STX + ETX)
 
 fn escaped_bytes(payload: &[u8]) -> UsbDataBuffer {
@@ -96,7 +107,7 @@ impl TryFrom<crate::message::Message> for UsbDataBuffer {
 /// Streaming frame parser that processes a byte stream and emits complete,
 /// unframed message payloads.
 ///
-/// Bytes are fed one at a time via [`push_byte`]. When a complete
+/// Bytes are fed one at a time via [`MessageStream::push_byte`]. When a complete
 /// STX…ETX frame is detected, the unframed/unescaped payload is returned.
 #[derive(Clone, Debug, Default)]
 pub struct MessageStream {
@@ -105,6 +116,7 @@ pub struct MessageStream {
 }
 
 impl MessageStream {
+    /// Creates an empty streaming frame parser.
     pub fn new() -> Self {
         Self {
             buffer: UsbDataBuffer::new(),

@@ -1,3 +1,9 @@
+//! USB discovery and transport support.
+//!
+//! [`crate::usb::UsbEnvironment`] discovers supported Enody products using both direct
+//! `rusb` access and a CDC serial fallback. It returns connected remote
+//! runtimes through the shared [`crate::environment::Environment`] trait.
+
 use async_trait::async_trait;
 use std::{
     collections::HashSet,
@@ -15,7 +21,9 @@ use crate::{
     Identifier,
 };
 
+/// `rusb`-based USB backend.
 pub mod rusb;
+/// CDC serial-port USB backend.
 pub mod serialport;
 
 use rusb::RusbBackend;
@@ -26,10 +34,14 @@ const MESSAGE_CHANNEL_SIZE: usize = 64;
 const USB_EVENT_CHANNEL_SIZE: usize = 16;
 const RUNTIME_EVENT_CHANNEL_SIZE: usize = 16;
 
+/// USB vendor/product identifier for a supported Enody product.
 #[derive(Clone, Copy, Debug)]
 pub struct UsbIdentifier {
+    /// Human-readable product name.
     pub name: &'static str,
+    /// USB vendor identifier.
     pub vendor_id: u16,
+    /// USB product identifier.
     pub product_id: u16,
 }
 
@@ -47,15 +59,24 @@ pub(crate) const EP01: UsbIdentifier = UsbIdentifier {
 
 pub(crate) const ALL_IDENTIFIERS: [UsbIdentifier; 1] = [EP01];
 
+/// USB device connection that can be wrapped as a remote runtime transport.
 pub trait UsbDevice: RemoteRuntimeConnection {
+    /// Returns the matched product USB identifier.
     fn identifier(&self) -> UsbIdentifier;
+
+    /// Returns the USB serial number, when available.
     fn serial_number(&self) -> Option<String>;
+
+    /// Returns a stable key used to deduplicate backend sightings.
     fn connection_key(&self) -> String;
 }
 
+/// Low-level USB device lifecycle event from a backend.
 #[derive(Debug)]
 pub enum UsbDeviceEvent {
+    /// Device became attached and connectable.
     Connected(Box<dyn UsbDevice>),
+    /// Device was detached or became unavailable.
     Disconnected(Box<dyn UsbDevice>),
 }
 

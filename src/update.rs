@@ -1,3 +1,9 @@
+//! EP01 firmware update helpers.
+//!
+//! This module discovers EP01 devices through the CDC serial backend, fetches
+//! firmware manifests from Enody's firmware service, flashes payloads with
+//! `espflash`, and verifies that the host comes back online.
+
 use crate::{
     environment::Environment,
     host::remote::RemoteHost,
@@ -27,6 +33,7 @@ struct FirmwarePayload {
     sha256: String,
 }
 
+/// Firmware version entry from the Enody firmware manifest.
 #[derive(Clone, Debug, Deserialize)]
 pub struct FirmwareVersion {
     version: String,
@@ -34,6 +41,7 @@ pub struct FirmwareVersion {
 }
 
 impl FirmwareVersion {
+    /// Returns the version string from the manifest.
     pub fn version(&self) -> &str {
         &self.version
     }
@@ -44,6 +52,7 @@ enum ResolvedFirmware {
     Payloads(Vec<(u32, Vec<u8>)>),
 }
 
+/// EP01 device selected for firmware update.
 #[derive(Clone, Default)]
 pub struct EP01UpdateTarget {
     info: HostInfo,
@@ -204,6 +213,7 @@ impl EP01UpdateTarget {
         targets
     }
 
+    /// Returns the host metadata collected for this update target.
     pub fn info(&self) -> &HostInfo {
         &self.info
     }
@@ -226,6 +236,7 @@ impl EP01UpdateTarget {
         sorted[0].clone()
     }
 
+    /// Flashes a single firmware image at the default application offset.
     pub fn flash_firmware_image(&self, firmware_path: &Path) -> Result<(), Error> {
         let image = std::fs::read(firmware_path).map_err(|e| {
             Error::Debug(format!(
@@ -236,6 +247,7 @@ impl EP01UpdateTarget {
         self.flash_payloads(&[(FIRMWARE_FLASH_OFFSET, image)])
     }
 
+    /// Flashes one or more `(offset, data)` payloads.
     pub fn flash_payloads(&self, payloads: &[(u32, Vec<u8>)]) -> Result<(), Error> {
         use espflash::cli::EspflashProgress;
         use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
@@ -325,10 +337,12 @@ impl EP01UpdateTarget {
         Ok(())
     }
 
+    /// Fetches firmware versions available for this target.
     pub async fn available_firmware(&self) -> Result<Vec<FirmwareVersion>, Error> {
         fetch_firmware_manifest(&self.info.identifier).await
     }
 
+    /// Returns whether a newer manifest version exists for this target.
     pub async fn update_available(&self) -> Result<bool, Error> {
         let versions = fetch_firmware_manifest(&self.info.identifier).await?;
         let current = &self.info.version;
@@ -337,6 +351,7 @@ impl EP01UpdateTarget {
             .any(|fv| fv.version.parse::<Version>().is_ok_and(|v| v > *current)))
     }
 
+    /// Downloads, flashes, and verifies a specific firmware version.
     pub async fn update_device(&self, version: &str) -> Result<(), Error> {
         let versions = fetch_firmware_manifest(&self.info.identifier).await?;
         let selected = versions
@@ -348,6 +363,7 @@ impl EP01UpdateTarget {
         self.verify_updated_host().await
     }
 
+    /// Waits for the updated host to reappear over USB.
     pub async fn verify_updated_host(&self) -> Result<(), Error> {
         let timeout = Duration::from_secs(30);
         let interval = Duration::from_secs(3);
@@ -384,6 +400,7 @@ impl EP01UpdateTarget {
     }
 }
 
+/// Fetches the firmware manifest for a host identifier.
 pub async fn fetch_firmware_manifest(host_id: &Identifier) -> Result<Vec<FirmwareVersion>, Error> {
     let url = format!("{}/{}/firmware.json", FIRMWARE_BASE_URL, host_id);
     println!("Fetching firmware manifest for {}...", host_id);
@@ -645,6 +662,7 @@ fn select_update_target(mut hosts: Vec<EP01UpdateTarget>) -> Result<EP01UpdateTa
     Ok(hosts.remove(selected_index))
 }
 
+/// Interactive firmware update flow used by the CLI.
 pub async fn update_remote_host(firmware: Option<PathBuf>, force: bool) -> Result<(), Error> {
     let hosts = EP01UpdateTarget::attached().await;
 

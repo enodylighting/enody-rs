@@ -16,6 +16,13 @@ cli = ["clap", "dialoguer", "serde_json"]
 [[bin]]
 name = "enody"
 path = "src/main.rs"
+required-features = ["remote", "cli"]
+
+[package.metadata.docs.rs]
+features = ["remote", "cli"]
+default-target = "x86_64-unknown-linux-gnu"
+targets = ["x86_64-unknown-linux-gnu"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 async-trait = { version = "0.1.89" }
