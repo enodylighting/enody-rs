@@ -1,3 +1,8 @@
+//! Host-level traits and remote host handles.
+//!
+//! A host represents one physical Enody product. It owns fixtures and exposes
+//! product-level operations such as network scanning and WiFi joining.
+
 use alloc::boxed::Box;
 
 use crate::{fixture::Fixture, message::Version, Identifier};
@@ -7,12 +12,18 @@ use crate::{fixture::Fixture, message::Version, Identifier};
 /// A host is typically a physical device (like EP01) that contains
 /// one or more fixtures.
 pub trait Host: Send + Sync {
+    /// Returns the stable host identifier.
     fn identifier(&self) -> Identifier;
+
+    /// Returns the firmware version reported by the host.
     fn version(&self) -> Version;
+
+    /// Returns the fixtures owned by this host.
     fn fixtures(&self) -> &[Box<dyn Fixture>];
 }
 
 #[cfg(feature = "remote")]
+/// Remote host handles.
 pub mod remote {
     use crate::{
         fixture::remote::RemoteFixture,
@@ -118,6 +129,9 @@ pub mod remote {
             Ok(fixtures)
         }
 
+        /// Scan networks matching the provided filters.
+        ///
+        /// The result list is bounded by [`NETWORK_SCAN_RESULT_MAX_LEN`].
         pub async fn network_scan(
             &self,
             filters: HVec<Network, NETWORK_SCAN_FILTER_MAX_LEN>,
@@ -142,6 +156,10 @@ pub mod remote {
             }
         }
 
+        /// Join a network using the provided credentials.
+        ///
+        /// This sends credentials to the product over the current trusted
+        /// runtime connection and waits for network join completion.
         pub async fn network_join(
             &self,
             network: Network,
@@ -167,6 +185,7 @@ pub mod remote {
             }
         }
 
+        /// Scan for nearby WiFi networks.
         pub async fn wifi_scan(
             &self,
         ) -> Result<HVec<Network, NETWORK_SCAN_RESULT_MAX_LEN>, crate::Error> {
@@ -177,6 +196,9 @@ pub mod remote {
             self.network_scan(filters).await
         }
 
+        /// Join a WiFi network by SSID and password.
+        ///
+        /// Pass an empty password for an open network.
         pub async fn wifi_join(&self, ssid: &str, password: &str) -> Result<(), crate::Error> {
             let network = Network::Wifi(WifiNetwork {
                 ssid: Some(heapless::String::try_from(ssid).map_err(|_| crate::Error::Argument)?),

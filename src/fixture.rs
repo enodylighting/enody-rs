@@ -1,3 +1,9 @@
+//! Fixture-level traits and remote fixture handles.
+//!
+//! A fixture is an addressable light output unit. It can display a computed
+//! configuration across all of its sources or expose those sources for more
+//! granular control.
+
 use alloc::boxed::Box;
 
 use crate::{
@@ -9,16 +15,22 @@ use crate::{
 /// Represents a fixture containing one or more light sources.
 #[allow(clippy::result_large_err)]
 pub trait Fixture: Send + Sync {
+    /// Returns the stable fixture identifier.
     fn identifier(&self) -> Identifier;
+
+    /// Displays a configuration at a target flux on the entire fixture.
     fn display(
         &mut self,
         config: Configuration,
         target_flux: Flux,
     ) -> Result<(Configuration, Flux), Error>;
+
+    /// Returns the sources contained by this fixture.
     fn sources(&self) -> &[Box<dyn Source>];
 }
 
 #[cfg(feature = "remote")]
+/// Remote fixture handles.
 pub mod remote {
     use crate::{
         message::{

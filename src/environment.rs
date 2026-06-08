@@ -1,11 +1,16 @@
+//! Discovery abstractions for collections of remote runtimes.
+//!
+//! An environment is a discovery surface such as USB or WiFi. Environments
+//! return connected [`crate::runtime::remote::RemoteRuntime`] handles and, when
+//! they support continuous discovery, emit arrival/removal events.
+
 use async_trait::async_trait;
 
 use crate::{runtime::remote::RemoteRuntime, Identifier};
 
-/// Environemnts can be used for discovering existing resources or creating
-/// user specificed groups of resources for grouped actions.
+/// Discovery surface that owns or finds remote runtimes.
 pub trait Environment {
-    /// Returns the unique identifier for this environment
+    /// Returns the unique identifier for this environment.
     fn identifier(&self) -> Identifier;
 
     /// Returns the list of currently known runtimes in this environment.
@@ -14,9 +19,12 @@ pub trait Environment {
     fn runtimes(&self) -> Vec<RemoteRuntime>;
 }
 
+/// Runtime lifecycle event emitted by a discovery environment.
 #[derive(Debug)]
 pub enum EnvironmentRuntimeEvent {
+    /// A runtime became reachable and was connected.
     Arrived(RemoteRuntime),
+    /// A previously connected runtime left or was excluded.
     Left(RemoteRuntime),
 }
 
@@ -32,5 +40,6 @@ pub trait DiscoveryEnvironment: Environment {
     /// Stop continuous discovery
     async fn stop_discovery(&mut self) -> Result<(), crate::Error>;
 
+    /// Wait for the next runtime arrival or removal event.
     async fn next_runtime_event(&self) -> Result<EnvironmentRuntimeEvent, crate::Error>;
 }

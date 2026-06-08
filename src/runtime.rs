@@ -1,3 +1,10 @@
+//! Runtime traits and host-side remote command dispatch.
+//!
+//! A runtime is the message-passing entry point for a product. Local runtimes
+//! implement [`crate::runtime::Runtime`]; host applications generally use
+//! `runtime::remote::RemoteRuntime`, which wraps a transport connection and matches
+//! command responses by context identifier.
+
 use alloc::boxed::Box;
 
 use crate::{
@@ -6,14 +13,23 @@ use crate::{
 };
 
 #[allow(clippy::result_large_err)]
+/// Local synchronous runtime trait.
 pub trait Runtime {
+    /// Executes a command and returns its response event.
     fn execute_command(&mut self, message: CommandMessage) -> Result<EventMessage, crate::Error>;
+
+    /// Handles a command received by the runtime.
     fn handle_command(&mut self, message: CommandMessage) -> Result<(), crate::Error>;
+
+    /// Handles an event received by the runtime.
     fn handle_event(&mut self, message: EventMessage) -> Result<(), crate::Error>;
+
+    /// Returns the host exposed by this runtime.
     fn host(&self) -> Box<dyn Host>;
 }
 
 #[cfg(feature = "remote")]
+/// Host-side remote runtime dispatcher.
 pub mod remote {
     use crate::{
         host::remote::RemoteHost,
@@ -43,6 +59,7 @@ pub mod remote {
     /// Implementations must handle their own internal synchronization.
     #[async_trait]
     pub trait RemoteRuntimeConnection: Debug + Send + Sync {
+        /// Returns the stable identifier for the remote runtime connection.
         fn identifier(&self) -> Identifier;
 
         /// Check if the connection is currently active.
@@ -376,6 +393,9 @@ pub mod remote {
             RemoteHost::from_runtime(self.clone()).await
         }
 
+        /// Generate and return a new WiFi authentication token.
+        ///
+        /// This is intended for use over a trusted connection, such as USB.
         pub async fn generate_token(&self) -> Result<Token, crate::Error> {
             let command = Command::Runtime(RuntimeCommand::TokenGenerate);
             let message = self
@@ -396,6 +416,10 @@ pub mod remote {
             }
         }
 
+        /// Read and deserialize a public stored setting.
+        ///
+        /// Private settings return [`crate::Error::Permission`], and missing
+        /// settings return [`crate::Error::InsufficientData`].
         pub async fn setting_get<Value>(&self, key: &str) -> Result<Value, crate::Error>
         where
             Value: serde::de::DeserializeOwned,
@@ -421,6 +445,7 @@ pub mod remote {
             }
         }
 
+        /// Serialize and store a setting value.
         pub async fn setting_set<Value>(&self, key: &str, value: Value) -> Result<(), crate::Error>
         where
             Value: serde::Serialize,
@@ -439,6 +464,7 @@ pub mod remote {
             }
         }
 
+        /// Delete a stored setting by key.
         pub async fn setting_delete(&self, key: &str) -> Result<(), crate::Error> {
             let key = SettingKey::try_from(key).map_err(|_| crate::Error::Argument)?;
             let command = Command::Runtime(RuntimeCommand::SettingDelete(key));

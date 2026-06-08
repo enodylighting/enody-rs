@@ -1,16 +1,31 @@
+//! Emitter-level control and spectral data access.
+//!
+//! Emitters are individual LED or light-producing channels inside a source.
+//! Local implementations use [`crate::emitter::Emitter`]; host applications use
+//! `emitter::remote::RemoteEmitter` when the `remote` feature is enabled.
+
 use core::ops::RangeInclusive;
 
 use crate::{message::Flux, spectral::SpectralData, Error, Identifier};
 
+/// Local trait for an individual emitter channel.
 #[allow(clippy::result_large_err)]
 pub trait Emitter: Send + Sync {
+    /// Returns the stable emitter identifier.
     fn identifier(&self) -> Identifier;
+
+    /// Returns the supported flux range for this emitter.
     fn flux_range(&self) -> RangeInclusive<Flux>;
+
+    /// Sets the target flux for this emitter.
     fn set_flux(&self, target_flux: Flux) -> Result<Flux, Error>;
+
+    /// Returns spectral data for the emitter at the requested target flux.
     fn spectral_data(&self, target_flux: Flux) -> SpectralData;
 }
 
 #[cfg(feature = "remote")]
+/// Remote emitter handles.
 pub mod remote {
     use crate::{
         message::{
@@ -23,16 +38,22 @@ pub mod remote {
     };
     use heapless::Vec as HeaplessVec;
 
+    /// Emitter accessed through a [`RemoteRuntime`].
+    ///
+    /// Cloning the underlying runtime is cheap, so remote emitters can be
+    /// moved independently of their parent source.
     pub struct RemoteEmitter {
         info: EmitterInfo,
         remote: RemoteRuntime,
     }
 
     impl RemoteEmitter {
+        /// Creates a remote emitter from protocol metadata and a runtime.
         pub fn new(info: EmitterInfo, remote: RemoteRuntime) -> Self {
             Self { info, remote }
         }
 
+        /// Returns the emitter identifier.
         pub fn identifier(&self) -> Identifier {
             self.info.identifier()
         }

@@ -1,3 +1,9 @@
+//! Host-side persistence for WiFi authentication tokens.
+//!
+//! Tokens are stored as JSON and upserted by host identifier. The default path
+//! is the first available base directory from `XDG_CONFIG_HOME/enody`,
+//! `HOME/.enody`, `USERPROFILE/.enody`, or `APPDATA/enody`.
+
 use crate::message::Token;
 use std::{
     env,
@@ -6,6 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Saved WiFi authentication tokens.
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct TokenStore {
     #[serde(default)]
@@ -13,6 +20,7 @@ pub struct TokenStore {
 }
 
 impl TokenStore {
+    /// Returns the configuration directory used for token persistence.
     pub fn config_dir() -> Result<PathBuf, crate::Error> {
         let config_home = env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty());
         if let Some(config_home) = config_home {
@@ -39,14 +47,19 @@ impl TokenStore {
         ))
     }
 
+    /// Returns the default token JSON path.
     pub fn path() -> Result<PathBuf, crate::Error> {
         Ok(Self::config_dir()?.join("tokens.json"))
     }
 
+    /// Loads the token store from the default path.
     pub fn load() -> Result<Self, crate::Error> {
         Self::load_from_path(Self::path()?)
     }
 
+    /// Loads a token store from a specific path.
+    ///
+    /// Missing files produce an empty store.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, crate::Error> {
         let contents = match fs::read_to_string(path) {
             Ok(contents) => contents,
@@ -58,12 +71,14 @@ impl TokenStore {
         serde_json::from_str(&contents).map_err(|error| crate::Error::Debug(error.to_string()))
     }
 
+    /// Saves the token store to the default path and returns that path.
     pub fn save(&self) -> Result<PathBuf, crate::Error> {
         let path = Self::path()?;
         self.save_to_path(&path)?;
         Ok(path)
     }
 
+    /// Saves the token store to a specific path.
     pub fn save_to_path(&self, path: impl AsRef<Path>) -> Result<(), crate::Error> {
         let contents = serde_json::to_string_pretty(self)
             .map_err(|error| crate::Error::Debug(error.to_string()))?;
@@ -87,20 +102,24 @@ impl TokenStore {
             .map_err(|error| crate::Error::Debug(error.to_string()))
     }
 
+    /// Loads the default store, upserts one token, saves it, and returns the path.
     pub fn save_token(token: &Token) -> Result<PathBuf, crate::Error> {
         let mut store = Self::load()?;
         store.upsert(token.clone());
         store.save()
     }
 
+    /// Returns the saved tokens.
     pub fn tokens(&self) -> &[Token] {
         &self.tokens
     }
 
+    /// Consumes the store and returns the saved tokens.
     pub fn into_tokens(self) -> Vec<Token> {
         self.tokens
     }
 
+    /// Inserts or replaces a token by host identifier.
     pub fn upsert(&mut self, token: Token) {
         if let Some(existing) = self
             .tokens

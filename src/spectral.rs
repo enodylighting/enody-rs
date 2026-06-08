@@ -1,3 +1,8 @@
+//! Spectral sample and spectral data structures.
+//!
+//! Spectral data is represented as wavelength/measurement samples. The default
+//! capacity covers 380 nm through 780 nm at 1 nm intervals.
+
 use heapless::Vec;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +19,7 @@ pub struct SpectralSample {
 }
 
 impl SpectralSample {
+    /// Creates a spectral sample from a wavelength and measurement.
     pub fn new(wavelength: Measurement, measurement: Measurement) -> Self {
         Self {
             wavelength,
@@ -21,10 +27,12 @@ impl SpectralSample {
         }
     }
 
+    /// Returns the sample wavelength.
     pub fn wavelength(&self) -> Measurement {
         self.wavelength
     }
 
+    /// Returns the sample measurement value.
     pub fn measurement(&self) -> Measurement {
         self.measurement
     }
@@ -37,10 +45,12 @@ pub struct SpectralData<const SAMPLE_COUNT: usize = DEFAULT_SAMPLE_COUNT> {
 }
 
 impl<const SAMPLE_COUNT: usize> SpectralData<SAMPLE_COUNT> {
+    /// Creates spectral data from a fixed-capacity sample vector.
     pub fn new(samples: Vec<SpectralSample, SAMPLE_COUNT>) -> Self {
         Self { samples }
     }
 
+    /// Returns all samples in this spectral data set.
     pub fn samples(&self) -> &Vec<SpectralSample, SAMPLE_COUNT> {
         &self.samples
     }
@@ -53,7 +63,9 @@ use crate::{message::HostInfo, Identifier};
 #[cfg(feature = "remote")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HostSpectralData {
+    /// Host metadata.
     pub host: HostInfo,
+    /// Fixture-level spectral data.
     pub fixtures: alloc::vec::Vec<FixtureSpectralData>,
 }
 
@@ -61,7 +73,9 @@ pub struct HostSpectralData {
 #[cfg(feature = "remote")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FixtureSpectralData {
+    /// Fixture identifier.
     pub identifier: Identifier,
+    /// Source-level spectral data.
     pub sources: alloc::vec::Vec<SourceSpectralData>,
 }
 
@@ -69,7 +83,9 @@ pub struct FixtureSpectralData {
 #[cfg(feature = "remote")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SourceSpectralData {
+    /// Source identifier.
     pub identifier: Identifier,
+    /// Emitter-level spectral data.
     pub emitters: alloc::vec::Vec<EmitterSpectralData>,
 }
 
@@ -77,6 +93,8 @@ pub struct SourceSpectralData {
 #[cfg(feature = "remote")]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EmitterSpectralData {
+    /// Emitter identifier.
     pub identifier: Identifier,
+    /// Downloaded spectral data for the emitter.
     pub spectral_data: SpectralData,
 }
