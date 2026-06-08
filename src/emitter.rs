@@ -29,8 +29,8 @@ pub trait Emitter: Send + Sync {
 pub mod remote {
     use crate::{
         message::{
-            Command, CommandMessage, EmitterCommand, EmitterEvent, EmitterInfo, Event, Flux,
-            SpectralDataCommand, SpectralDataEvent, SPECTRAL_SAMPLE_BATCH_SIZE,
+            Command, CommandMessage, EmitterCommand, EmitterEvent, EmitterInfo, EmitterState,
+            Event, Flux, SpectralDataCommand, SpectralDataEvent, SPECTRAL_SAMPLE_BATCH_SIZE,
         },
         runtime::remote::RemoteRuntime,
         spectral::{SpectralData, SpectralSample},
@@ -56,6 +56,21 @@ pub mod remote {
         /// Returns the emitter identifier.
         pub fn identifier(&self) -> Identifier {
             self.info.identifier()
+        }
+
+        /// Fetch the emitter's current driver state.
+        pub async fn state(&self) -> Result<EmitterState, crate::Error> {
+            let command = Command::Emitter(EmitterCommand::State);
+            let command_message = CommandMessage::root(command, Some(self.identifier()));
+            let event_message = self.remote.execute_command(command_message).await?;
+            if event_message.resource != Some(self.identifier()) {
+                return Err(crate::Error::UnexpectedResponse);
+            }
+
+            match event_message.event {
+                Event::Emitter(EmitterEvent::State(state)) => Ok(state),
+                _ => Err(crate::Error::UnexpectedResponse),
+            }
         }
 
         /// Set the flux on this emitter.
