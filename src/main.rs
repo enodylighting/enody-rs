@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use enody::{
     environment::{DiscoveryEnvironment, Environment},
-    message::{Network, Token, WifiAuth},
+    message::{Network, SourceState, Token, WifiAuth},
     runtime::remote::RemoteRuntime,
     token_store::TokenStore,
     usb::UsbEnvironment,
@@ -94,6 +94,9 @@ enum Commands {
 
     /// Display detailed information about all attached devices
     Info,
+
+    /// Dump source state for discovered fixtures as JSON
+    State,
 
     /// Monitor log output from all attached devices
     Monitor,
@@ -227,6 +230,7 @@ async fn main() -> Result<(), enody::Error> {
     match cli.command {
         Commands::List => list_devices().await?,
         Commands::Info => info_devices().await?,
+        Commands::State => state_devices().await?,
         Commands::Monitor => monitor_devices().await?,
         Commands::Hotplug => hotplug_monitor().await?,
         Commands::SetBlackbody { cct, flux } => set_blackbody(cct, flux, cli.verbose).await?,
@@ -271,6 +275,71 @@ async fn main() -> Result<(), enody::Error> {
             wifi_generate_token_from_mdns(Duration::from_millis(timeout_ms)).await?
         }
     }
+
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct SourceStateDump {
+    hosts: Vec<HostSourceStateDump>,
+}
+
+#[derive(serde::Serialize)]
+struct HostSourceStateDump {
+    identifier: Identifier,
+    version: String,
+    fixtures: Vec<FixtureSourceStateDump>,
+}
+
+#[derive(serde::Serialize)]
+struct FixtureSourceStateDump {
+    identifier: Identifier,
+    sources: Vec<SourceStateEntry>,
+}
+
+#[derive(serde::Serialize)]
+struct SourceStateEntry {
+    identifier: Identifier,
+    state: SourceState,
+}
+
+async fn state_devices() -> Result<(), enody::Error> {
+    let discovered = discover_runtimes().await?;
+    let mut hosts = Vec::new();
+
+    for runtime in &discovered.runtimes {
+        let host = runtime.host().await?;
+        let fixtures = host.fixtures().await?;
+        let mut fixture_outputs = Vec::with_capacity(fixtures.len());
+
+        for fixture in fixtures {
+            let sources = fixture.sources().await?;
+            let mut source_outputs = Vec::with_capacity(sources.len());
+
+            for source in sources {
+                source_outputs.push(SourceStateEntry {
+                    identifier: source.identifier(),
+                    state: source.state().await?,
+                });
+            }
+
+            fixture_outputs.push(FixtureSourceStateDump {
+                identifier: fixture.identifier(),
+                sources: source_outputs,
+            });
+        }
+
+        hosts.push(HostSourceStateDump {
+            identifier: host.identifier(),
+            version: host.version().to_string(),
+            fixtures: fixture_outputs,
+        });
+    }
+
+    let output = SourceStateDump { hosts };
+    let json = serde_json::to_string_pretty(&output)
+        .map_err(|e| enody::Error::Debug(format!("JSON serialization failed: {}", e)))?;
+    println!("{json}");
 
     Ok(())
 }

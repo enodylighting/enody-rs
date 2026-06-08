@@ -199,6 +199,18 @@ pub struct EventMessage {
     pub event: Event,
 }
 
+impl EventMessage {
+    /// Creates a response event for a command, preserving the command's resource.
+    pub fn response_to(command: &CommandMessage, event: Event) -> Self {
+        Self {
+            identifier: uuid::Uuid::new_v4(),
+            context: Some(command.identifier),
+            resource: command.resource,
+            event,
+        }
+    }
+}
+
 /// Event payload grouped by protocol resource.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Event {
@@ -333,6 +345,8 @@ pub enum FixtureCommand {
     SourceCount,
     /// Request metadata for the source at the given index.
     SourceInfo(u32),
+    /// Request the fixture's current target state.
+    State,
 }
 
 /// Events emitted by a fixture.
@@ -346,6 +360,8 @@ pub enum FixtureEvent {
     SourceCount(u32),
     /// Source metadata response.
     SourceInfo(SourceInfo),
+    /// Fixture state response.
+    State(FixtureState),
 }
 
 /// Metadata describing a fixture.
@@ -353,6 +369,25 @@ pub enum FixtureEvent {
 pub struct FixtureInfo {
     /// Stable fixture identifier.
     pub identifier: Identifier,
+}
+
+/// Current target state reported by a fixture.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct FixtureState {
+    /// Target output configuration.
+    pub configuration: Configuration,
+    /// Target luminous flux.
+    pub flux: Flux,
+}
+
+impl FixtureState {
+    /// Creates fixture state.
+    pub fn new(configuration: Configuration, flux: Flux) -> Self {
+        Self {
+            configuration,
+            flux,
+        }
+    }
 }
 
 /// Commands accepted by a source.
@@ -366,6 +401,8 @@ pub enum SourceCommand {
     EmitterCount,
     /// Request metadata for the emitter at the given index.
     EmitterInfo(u32),
+    /// Request the source's current target state.
+    State,
 }
 
 /// Events emitted by a source.
@@ -379,6 +416,8 @@ pub enum SourceEvent {
     EmitterCount(u32),
     /// Emitter metadata response.
     EmitterInfo(EmitterInfo),
+    /// Source state response.
+    State(SourceState),
 }
 
 /// Metadata describing a source.
@@ -386,6 +425,25 @@ pub enum SourceEvent {
 pub struct SourceInfo {
     /// Stable source identifier.
     pub identifier: Identifier,
+}
+
+/// Current target state reported by a source.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SourceState {
+    /// Target output configuration.
+    pub configuration: Configuration,
+    /// Target luminous flux.
+    pub flux: Flux,
+}
+
+impl SourceState {
+    /// Creates source state.
+    pub fn new(configuration: Configuration, flux: Flux) -> Self {
+        Self {
+            configuration,
+            flux,
+        }
+    }
 }
 
 /// Commands accepted by an emitter.
@@ -399,6 +457,8 @@ pub enum EmitterCommand {
     FluxSet(Flux),
     /// Request spectral data.
     SpectralData(SpectralDataCommand),
+    /// Request the emitter's current target flux.
+    State,
 }
 
 /// Events emitted by an emitter.
@@ -412,6 +472,8 @@ pub enum EmitterEvent {
     FluxSet(Flux),
     /// Spectral data response.
     SpectralData(SpectralDataEvent),
+    /// Emitter state response.
+    State(EmitterState),
 }
 
 /// Metadata describing an emitter.
@@ -431,6 +493,20 @@ impl EmitterInfo {
     /// Returns the emitter identifier.
     pub fn identifier(&self) -> Identifier {
         self.identifier
+    }
+}
+
+/// Current target state reported by an emitter.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EmitterState {
+    /// Target relative flux as a ratio from `0.0` to `1.0`.
+    pub flux: Measurement,
+}
+
+impl EmitterState {
+    /// Creates emitter state.
+    pub fn new(flux: Measurement) -> Self {
+        Self { flux }
     }
 }
 

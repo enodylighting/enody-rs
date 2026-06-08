@@ -35,7 +35,7 @@ pub mod remote {
     use crate::{
         message::{
             Command, CommandMessage, Configuration, Event, FixtureCommand, FixtureEvent,
-            FixtureInfo, Flux, SourceInfo,
+            FixtureInfo, FixtureState, Flux, SourceInfo,
         },
         runtime::remote::RemoteRuntime,
         source::remote::RemoteSource,
@@ -74,6 +74,22 @@ pub mod remote {
         /// Get the fixture identifier.
         pub fn identifier(&self) -> Identifier {
             self.info.identifier
+        }
+
+        /// Fetch the fixture's current target state.
+        pub async fn state(&self) -> Result<FixtureState, crate::Error> {
+            let command = Command::Fixture(FixtureCommand::State);
+            let command_message = CommandMessage::root(command, Some(self.identifier()));
+
+            let event_message = self.remote.execute_command(command_message).await?;
+            if event_message.resource != Some(self.identifier()) {
+                return Err(crate::Error::UnexpectedResponse);
+            }
+
+            match event_message.event {
+                Event::Fixture(FixtureEvent::State(state)) => Ok(state),
+                _ => Err(crate::Error::UnexpectedResponse),
+            }
         }
 
         /// Fetch information about a specific source by index.
