@@ -7,7 +7,7 @@
 use alloc::boxed::Box;
 
 use crate::{
-    message::{Configuration, Flux},
+    message::{Configuration, FixtureState, Flux, Transition},
     source::Source,
     Error, Identifier,
 };
@@ -25,6 +25,15 @@ pub trait Fixture: Send + Sync {
         target_flux: Flux,
     ) -> Result<(Configuration, Flux), Error>;
 
+    /// Transitions the fixture to a target state over time.
+    ///
+    /// Local implementations may override this to run the interpolation on the
+    /// device side. The default returns [`Error::Unsupported`].
+    fn transition(&mut self, transition: Transition<FixtureState>) -> Result<FixtureState, Error> {
+        let _ = transition;
+        Err(Error::Unsupported)
+    }
+
     /// Returns the sources contained by this fixture.
     fn sources(&self) -> &[Box<dyn Source>];
 }
@@ -35,7 +44,7 @@ pub mod remote {
     use crate::{
         message::{
             Command, CommandMessage, Configuration, Event, FixtureCommand, FixtureEvent,
-            FixtureInfo, FixtureState, Flux, SourceInfo,
+            FixtureInfo, FixtureState, Flux, SourceInfo, Transition,
         },
         runtime::remote::RemoteRuntime,
         source::remote::RemoteSource,
@@ -132,6 +141,51 @@ pub mod remote {
 
             match event_message.event {
                 Event::Fixture(FixtureEvent::Display(config, flux)) => Ok((config, flux)),
+                _ => Err(crate::Error::UnexpectedResponse),
+            }
+        }
+
+        /// Run a fixture transition and wait for its terminal event.
+        ///
+        /// The remote runtime may also emit a context-matched
+        /// [`FixtureEvent::TransitionStart`] before the transition ends. That
+        /// intermediate event is consumed while this method waits for a
+        /// [`FixtureEvent::TransitionEnd`] that carries the same transition
+        /// payload as this request.
+        pub async fn transition(
+            &self,
+            transition: Transition<FixtureState>,
+        ) -> Result<FixtureState, crate::Error> {
+            let expected_transition = transition.clone();
+            let timeout = transition
+                .method
+                .duration()
+                .saturating_add(std::time::Duration::from_secs(2));
+            let command = Command::Fixture(FixtureCommand::Transition(transition));
+            let command_message = CommandMessage::root(command, Some(self.identifier()));
+            let context = command_message.identifier;
+
+            let event_message = self
+                .remote
+                .execute_command_with_timeout_until(
+                    command_message,
+                    timeout,
+                    move |event_message| {
+                        event_message.context.as_ref() == Some(&context)
+                            && matches!(
+                                &event_message.event,
+                                Event::Fixture(FixtureEvent::TransitionEnd(transition, _))
+                                    if transition == &expected_transition
+                            )
+                    },
+                )
+                .await?;
+            if event_message.resource != Some(self.identifier()) {
+                return Err(crate::Error::UnexpectedResponse);
+            }
+
+            match event_message.event {
+                Event::Fixture(FixtureEvent::TransitionEnd(_, state)) => Ok(state),
                 _ => Err(crate::Error::UnexpectedResponse),
             }
         }

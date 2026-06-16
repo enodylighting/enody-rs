@@ -7,7 +7,7 @@ use alloc::boxed::Box;
 
 use crate::{
     emitter::Emitter,
-    message::{Configuration, Flux},
+    message::{Configuration, Flux, SourceState, Transition},
     Error, Identifier,
 };
 
@@ -24,6 +24,15 @@ pub trait Source: Send + Sync {
         target_flux: Flux,
     ) -> Result<(Configuration, Flux), Error>;
 
+    /// Transitions this source to a target state over time.
+    ///
+    /// Local implementations may override this to run the interpolation on the
+    /// device side. The default returns [`Error::Unsupported`].
+    fn transition(&mut self, transition: Transition<SourceState>) -> Result<SourceState, Error> {
+        let _ = transition;
+        Err(Error::Unsupported)
+    }
+
     /// Returns the emitters contained by this source.
     fn emitters(&self) -> &[Box<dyn Emitter>];
 }
@@ -35,7 +44,7 @@ pub mod remote {
         emitter::remote::RemoteEmitter,
         message::{
             Command, CommandMessage, Configuration, EmitterInfo, Event, Flux, SourceCommand,
-            SourceEvent, SourceInfo, SourceState,
+            SourceEvent, SourceInfo, SourceState, Transition,
         },
         runtime::remote::RemoteRuntime,
         Identifier,
@@ -104,6 +113,51 @@ pub mod remote {
 
             match event_message.event {
                 Event::Source(SourceEvent::Display(config, flux)) => Ok((config, flux)),
+                _ => Err(crate::Error::UnexpectedResponse),
+            }
+        }
+
+        /// Run a source transition and wait for its terminal event.
+        ///
+        /// The remote runtime may also emit a context-matched
+        /// [`SourceEvent::TransitionStart`] before the transition ends. That
+        /// intermediate event is consumed while this method waits for a
+        /// [`SourceEvent::TransitionEnd`] that carries the same transition
+        /// payload as this request.
+        pub async fn transition(
+            &self,
+            transition: Transition<SourceState>,
+        ) -> Result<SourceState, crate::Error> {
+            let expected_transition = transition.clone();
+            let timeout = transition
+                .method
+                .duration()
+                .saturating_add(std::time::Duration::from_secs(2));
+            let command = Command::Source(SourceCommand::Transition(transition));
+            let command_message = CommandMessage::root(command, Some(self.identifier()));
+            let context = command_message.identifier;
+
+            let event_message = self
+                .remote
+                .execute_command_with_timeout_until(
+                    command_message,
+                    timeout,
+                    move |event_message| {
+                        event_message.context.as_ref() == Some(&context)
+                            && matches!(
+                                &event_message.event,
+                                Event::Source(SourceEvent::TransitionEnd(transition, _))
+                                    if transition == &expected_transition
+                            )
+                    },
+                )
+                .await?;
+            if event_message.resource != Some(self.identifier()) {
+                return Err(crate::Error::UnexpectedResponse);
+            }
+
+            match event_message.event {
+                Event::Source(SourceEvent::TransitionEnd(_, state)) => Ok(state),
                 _ => Err(crate::Error::UnexpectedResponse),
             }
         }

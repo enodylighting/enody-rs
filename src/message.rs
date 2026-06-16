@@ -6,6 +6,7 @@
 //! can match replies to pending commands.
 
 #![allow(clippy::large_enum_variant)]
+use core::time::Duration;
 
 use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
@@ -17,7 +18,7 @@ pub const SPECTRAL_SAMPLE_BATCH_SIZE: usize = 32;
 const LOG_EVENT_BUFFER_SIZE: usize = 256;
 
 /// Target luminous flux.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub enum Flux {
     /// Relative flux, usually normalized between `0.0` and `1.0`.
     Relative(Measurement),
@@ -45,6 +46,39 @@ pub enum Configuration {
     Spectral,
     /// Manual emitter mix mode.
     Manual,
+}
+
+/// Interpolation mode for a long-running transition.
+///
+/// Transition commands are sent as a single protocol message. The receiving
+/// runtime performs the interpolation locally and reports start and end events
+/// with the original command context.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+pub enum TransitionMethod {
+    /// Linearly interpolate from the current state to the target over `Duration`.
+    Linear(Duration),
+}
+
+impl TransitionMethod {
+    /// Returns the wall-clock duration of this transition method.
+    pub fn duration(&self) -> Duration {
+        match self {
+            Self::Linear(duration) => *duration,
+        }
+    }
+}
+
+/// A target state plus the interpolation method used to reach it.
+///
+/// `State` is usually [`FixtureState`] or [`SourceState`]. The transition does
+/// not include a starting state because the runtime samples the current state
+/// when the command arrives and reports it in `TransitionStart`.
+#[derive(Clone, Debug, PartialEq, PartialOrd, Deserialize, Serialize)]
+pub struct Transition<State> {
+    /// Target state at the end of the transition.
+    pub target: State,
+    /// Interpolation method used between the sampled current state and target.
+    pub method: TransitionMethod,
 }
 
 /// Semantic firmware or protocol version.
@@ -347,6 +381,8 @@ pub enum FixtureCommand {
     SourceInfo(u32),
     /// Request the fixture's current target state.
     State,
+    /// Transition fixture state over time.
+    Transition(Transition<FixtureState>),
 }
 
 /// Events emitted by a fixture.
@@ -362,6 +398,18 @@ pub enum FixtureEvent {
     SourceInfo(SourceInfo),
     /// Fixture state response.
     State(FixtureState),
+    /// Transition start response.
+    ///
+    /// The first argument is the state sampled when the command began. The
+    /// second argument is the transition supplied by the command.
+    TransitionStart(FixtureState, Transition<FixtureState>),
+    /// Transition terminal response.
+    ///
+    /// The first argument is the transition supplied by the command. The
+    /// second argument is the receiver's final state. For uninterrupted
+    /// transitions this state equals the transition target; for interrupted
+    /// transitions it is the state at the time of interruption.
+    TransitionEnd(Transition<FixtureState>, FixtureState),
 }
 
 /// Metadata describing a fixture.
@@ -372,7 +420,7 @@ pub struct FixtureInfo {
 }
 
 /// Current target state reported by a fixture.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct FixtureState {
     /// Target output configuration.
     pub configuration: Configuration,
@@ -403,6 +451,8 @@ pub enum SourceCommand {
     EmitterInfo(u32),
     /// Request the source's current target state.
     State,
+    /// Transition source state over time.
+    Transition(Transition<SourceState>),
 }
 
 /// Events emitted by a source.
@@ -418,6 +468,18 @@ pub enum SourceEvent {
     EmitterInfo(EmitterInfo),
     /// Source state response.
     State(SourceState),
+    /// Transition start response.
+    ///
+    /// The first argument is the state sampled when the command began. The
+    /// second argument is the transition supplied by the command.
+    TransitionStart(SourceState, Transition<SourceState>),
+    /// Transition terminal response.
+    ///
+    /// The first argument is the transition supplied by the command. The
+    /// second argument is the receiver's final state. For uninterrupted
+    /// transitions this state equals the transition target; for interrupted
+    /// transitions it is the state at the time of interruption.
+    TransitionEnd(Transition<SourceState>, SourceState),
 }
 
 /// Metadata describing a source.
@@ -428,7 +490,7 @@ pub struct SourceInfo {
 }
 
 /// Current target state reported by a source.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, PartialOrd, Deserialize, Serialize)]
 pub struct SourceState {
     /// Target output configuration.
     pub configuration: Configuration,
