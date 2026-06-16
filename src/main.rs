@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use enody::{
     environment::{DiscoveryEnvironment, Environment},
+    fixture::remote::RemoteFixture,
     message::{Network, SourceState, Token, WifiAuth},
     runtime::remote::RemoteRuntime,
     token_store::TokenStore,
@@ -166,10 +167,6 @@ enum Commands {
         /// Duration in seconds (default: 1.0)
         #[arg(short, long, default_value_t = 1.0)]
         duration: f32,
-
-        /// Target framerate in fps (default: 60, max: 240)
-        #[arg(short, long, default_value_t = 60.0)]
-        rate: f32,
     },
 
     /// Scan each emitter individually, activating one at a time
@@ -249,19 +246,7 @@ async fn main() -> Result<(), enody::Error> {
             from_flux,
             to_flux,
             duration,
-            rate,
-        } => {
-            fade(
-                from_cct,
-                to_cct,
-                from_flux,
-                to_flux,
-                duration,
-                rate,
-                cli.verbose,
-            )
-            .await?
-        }
+        } => fade(from_cct, to_cct, from_flux, to_flux, duration, cli.verbose).await?,
         Commands::Scan { flux, duration } => scan(flux, duration).await?,
         Commands::DownloadSpectralData { output } => download_spectral_data(&output).await?,
         Commands::Update { firmware, force } => {
@@ -920,17 +905,89 @@ async fn strobe(
     Ok(())
 }
 
+fn transition_duration(duration_secs: f32) -> Result<Duration, enody::Error> {
+    if !duration_secs.is_finite() || duration_secs < 0.0 {
+        return Err(enody::Error::Argument);
+    }
+
+    Ok(Duration::from_secs_f32(duration_secs))
+}
+
+async fn collect_fixtures(
+    runtimes: &[RemoteRuntime],
+    verbose: bool,
+) -> Result<Vec<RemoteFixture>, enody::Error> {
+    let mut fixtures = Vec::new();
+    for (index, runtime) in runtimes.iter().enumerate() {
+        let Ok(host) = runtime.host().await else {
+            vprintln!(verbose, "Failed to query host on runtime {}", index + 1);
+            continue;
+        };
+
+        let Ok(discovered_fixtures) = host.fixtures().await else {
+            vprintln!(
+                verbose,
+                "Failed to discover fixtures on runtime {}",
+                index + 1
+            );
+            continue;
+        };
+        fixtures.extend(discovered_fixtures);
+    }
+
+    Ok(fixtures)
+}
+
+async fn run_fixture_transition(
+    fixtures: Vec<RemoteFixture>,
+    transition: enody::message::Transition<enody::message::FixtureState>,
+    verbose: bool,
+) -> Result<(), enody::Error> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for fixture in fixtures {
+        let fixture_id = fixture.identifier();
+        let transition = transition.clone();
+        tasks.spawn(async move {
+            let result = fixture.transition(transition).await;
+            (fixture_id, result)
+        });
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        let (fixture_id, transition_result) =
+            result.map_err(|error| enody::Error::Debug(error.to_string()))?;
+        match transition_result {
+            Ok(final_state) => {
+                vprintln!(
+                    verbose,
+                    "Fixture {} transition ended at {:?}",
+                    fixture_id,
+                    final_state
+                );
+            }
+            Err(error) => {
+                vprintln!(
+                    verbose,
+                    "Fixture {} transition failed: {:?}",
+                    fixture_id,
+                    error
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn fade(
     from_cct: f32,
     to_cct: f32,
     from_flux: f32,
     to_flux: f32,
     duration: f32,
-    rate: f32,
     verbose: bool,
 ) -> Result<(), enody::Error> {
-    use enody::message::{Configuration, Flux};
-    use std::time::Duration;
+    use enody::message::{Configuration, FixtureState, Flux, Transition, TransitionMethod};
 
     let discovered = discover_runtimes().await?;
     let runtimes = &discovered.runtimes;
@@ -940,55 +997,37 @@ async fn fade(
         return Ok(());
     }
 
-    let capped_rate = rate.min(240.0);
-    let total_frames = (duration * capped_rate) as u32;
-    let frame_duration = Duration::from_secs_f32(1.0 / capped_rate);
-
-    let mut fixtures = Vec::new();
-    for (index, runtime) in runtimes.iter().enumerate() {
-        let Ok(host) = runtime.host().await else {
-            vprintln!(verbose, "Failed to query host on runtime {}", index + 1);
-            continue;
-        };
-
-        let Ok(f) = host.fixtures().await else {
-            vprintln!(
-                verbose,
-                "Failed to discover fixtures on runtime {}",
-                index + 1
-            );
-            continue;
-        };
-        fixtures.extend(f);
-    }
-
+    let fixtures = collect_fixtures(runtimes, verbose).await?;
     if fixtures.is_empty() {
         vprintln!(verbose, "No fixtures found.");
         return Ok(());
     }
 
-    let mut interval = tokio::time::interval(frame_duration);
-    for frame in 0..=total_frames {
-        interval.tick().await;
-        let t = if total_frames == 0 {
-            1.0
-        } else {
-            frame as f32 / total_frames as f32
-        };
-        let cct = from_cct + (to_cct - from_cct) * t;
-        let flux = from_flux + (to_flux - from_flux) * t;
-        let config = Configuration::Blackbody(cct);
-        let target_flux = Flux::Relative(flux);
-
-        for fixture in &fixtures {
-            let _ = fixture.display(config.clone(), target_flux.clone()).await;
+    let start_config = Configuration::Blackbody(from_cct);
+    let start_flux = Flux::Relative(from_flux);
+    for fixture in &fixtures {
+        if let Err(error) = fixture
+            .display(start_config.clone(), start_flux.clone())
+            .await
+        {
+            vprintln!(
+                verbose,
+                "Failed to set fixture {} fade start state: {:?}",
+                fixture.identifier(),
+                error
+            );
         }
     }
 
+    let transition = Transition {
+        target: FixtureState::new(Configuration::Blackbody(to_cct), Flux::Relative(to_flux)),
+        method: TransitionMethod::Linear(transition_duration(duration)?),
+    };
+    run_fixture_transition(fixtures, transition, verbose).await?;
+
     vprintln!(
         verbose,
-        "Fade complete: {} frames in {:.2}s",
-        total_frames + 1,
+        "Fade transition command completed in {:.2}s",
         duration
     );
 

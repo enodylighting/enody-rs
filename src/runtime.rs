@@ -290,8 +290,8 @@ pub mod remote {
         }
 
         /// Execute a command and wait until a context-matched event satisfies
-        /// `is_terminal`. Intermediate context events are forwarded to
-        /// `next_message()` and the timeout covers the whole execution window.
+        /// `is_terminal`. Intermediate context events are consumed by this wait
+        /// and the timeout covers the whole execution window.
         pub async fn execute_command_with_timeout_until<F>(
             &self,
             command: CommandMessage,
@@ -325,11 +325,13 @@ pub mod remote {
             loop {
                 match tokio::time::timeout_at(deadline, response_rx.recv()).await {
                     Ok(Some(response)) => {
-                        if response.context.as_ref() == Some(&context) {
-                            if let Event::Error(error) = &response.event {
-                                Self::remove_pending_registration(&self.inner, &context).await;
-                                return Err(error.clone());
-                            }
+                        if response.context.as_ref() != Some(&context) {
+                            continue;
+                        }
+
+                        if let Event::Error(error) = &response.event {
+                            Self::remove_pending_registration(&self.inner, &context).await;
+                            return Err(error.clone());
                         }
 
                         if is_terminal(&response) {
@@ -344,7 +346,11 @@ pub mod remote {
                             return Ok(response);
                         }
 
-                        Self::forward_unmatched_message(&self.inner, Message::Event(response));
+                        log::trace!(
+                            "Command {} received intermediate event while waiting (context={})",
+                            command_debug,
+                            context,
+                        );
                     }
                     Ok(None) => {
                         Self::remove_pending_registration(&self.inner, &context).await;

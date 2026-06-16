@@ -54,6 +54,44 @@
 //! # }
 //! ```
 //!
+//! For longer fades, send one transition command and let the device interpolate
+//! locally. The runtime emits `TransitionStart(current, transition)`,
+//! followed by `TransitionEnd(transition, final_state)` with the original
+//! command context.
+//! Remote fixture/source helpers return the final receiver state after the end
+//! event, which may differ from the target if the transition was interrupted.
+//! Sending a new transition to the same receiver interrupts the old transition;
+//! the new transition starts from the interrupted state while other commands can
+//! continue to receive responses during the animation.
+//!
+//! ```no_run
+//! # #[cfg(feature = "remote")]
+//! # async fn example(
+//! #     fixture: enody::fixture::remote::RemoteFixture,
+//! #     source: enody::source::remote::RemoteSource,
+//! # ) -> Result<(), enody::Error> {
+//! use core::time::Duration;
+//! use enody::message::{
+//!     Configuration, FixtureState, Flux, SourceState, Transition, TransitionMethod,
+//! };
+//!
+//! fixture
+//!     .transition(Transition {
+//!         target: FixtureState::new(Configuration::Blackbody(2700.0), Flux::Relative(0.4)),
+//!         method: TransitionMethod::Linear(Duration::from_secs(2)),
+//!     })
+//!     .await?;
+//!
+//! source
+//!     .transition(Transition {
+//!         target: SourceState::new(Configuration::Flux, Flux::Relative(0.0)),
+//!         method: TransitionMethod::Linear(Duration::from_millis(750)),
+//!     })
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! # Feature Flags
 //!
 //! - `remote`: host-side discovery and transport APIs. This implies `std`.

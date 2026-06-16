@@ -51,6 +51,38 @@ fixture.display(
 ).await?;
 ```
 
+### Long-running transitions
+
+Fixtures and sources can run linear transitions locally after receiving a
+single command packet. The device replies with
+`TransitionStart(current_state, transition)` when it samples the starting state,
+periodic `TransitionProgress(transition, state, progress)` events while it is running,
+then `TransitionEnd(transition, final_state)` when interpolation finishes or is
+interrupted. The remote helpers wait for the end event and return the final
+receiver state. Sending a new transition to the same receiver interrupts the
+old transition and starts the new one from the interrupted state; other commands
+can continue to receive responses while the animation runs.
+
+```rust
+use core::time::Duration;
+use enody::message::{
+    Configuration, FixtureState, Flux, SourceState, Transition, TransitionMethod,
+};
+
+fixture.transition(Transition {
+    target: FixtureState::new(Configuration::Blackbody(2700.0), Flux::Relative(0.5)),
+    method: TransitionMethod::Linear(Duration::from_secs(2)),
+}).await?;
+
+source.transition(Transition {
+    target: SourceState::new(Configuration::Flux, Flux::Relative(0.0)),
+    method: TransitionMethod::Linear(Duration::from_millis(750)),
+}).await?;
+```
+
+Emitter-level transitions are intentionally not part of the SDK surface; use
+source or fixture transitions for device-side animation.
+
 ## Features
 
 - `std` (default via `remote`): Standard library support
@@ -78,7 +110,7 @@ enody monitor                               # Stream device log output
 enody set-blackbody 4000                    # Set all fixtures to 4000K
 enody set-blackbody 6500 --flux 0.8         # 6500K at 80% brightness
 enody strobe 4000 --rate 120 --duration 2   # Strobe at 120fps for 2s
-enody fade --from-cct 6500 --to-cct 2700 --duration 5  # Linear CCT fade
+enody fade --from-cct 6500 --to-cct 2700 --duration 5  # One-packet transition fade
 ```
 
 ## Build

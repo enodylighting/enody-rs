@@ -143,6 +143,40 @@ asking the product to compute a blackbody or chromatic mix.
 `RemoteEmitter::spectral_data()` downloads spectral data by querying sample
 count and reading samples in `SampleBatch` chunks.
 
+Long-running fixture/source animation uses `message::Transition<State>`:
+
+```rust
+use core::time::Duration;
+use enody::message::{
+    Configuration, FixtureState, Flux, SourceState, Transition, TransitionMethod,
+};
+
+fixture
+    .transition(Transition {
+        target: FixtureState::new(Configuration::Blackbody(2700.0), Flux::Relative(0.4)),
+        method: TransitionMethod::Linear(Duration::from_secs(2)),
+    })
+    .await?;
+
+source
+    .transition(Transition {
+        target: SourceState::new(Configuration::Flux, Flux::Relative(0.0)),
+        method: TransitionMethod::Linear(Duration::from_millis(750)),
+    })
+    .await?;
+```
+
+The runtime emits context-matched `TransitionStart(current_state, transition)`,
+`TransitionProgress(transition, state, progress)`, and
+`TransitionEnd(transition, final_state)` events. The remote helper methods use
+`execute_command_with_timeout_until()` and return after the end event. If a
+gesture or another command interrupts the transition, `final_state` is the state
+at interruption time rather than the transition target. A new transition for the
+same receiver takes over from that interrupted state, while non-transition
+commands should continue receiving responses during the animation. Do not add
+emitter transitions; emitter control remains explicit flux setting plus
+source/fixture display.
+
 ## Runtime And Message Behavior
 
 All remote transports carry `message::Message` values:
@@ -164,7 +198,8 @@ adds the higher-level behavior:
 - `connect()` starts the background dispatch task.
 - `execute_command()` sends one command and waits for a matching response.
 - `execute_command_with_timeout_until()` handles multi-event operations such as
-  WiFi scans, joins, and token generation.
+  WiFi scans, joins, token generation, and transitions. It consumes
+  context-matched intermediate events until the terminal predicate is satisfied.
 - `send_command()` and `send_event()` are fire-and-forget helpers.
 - `next_message()` returns unmatched messages.
 - `enable_logging()` consumes `RuntimeEvent::Log` messages and forwards them to
